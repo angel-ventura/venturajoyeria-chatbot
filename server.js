@@ -9,53 +9,61 @@ import pkg from "@pinecone-database/pinecone";
 
 const { Pinecone } = pkg;
 
-// ─── Init clients ─────────────────────────────────────────────────────────────
-const app      = express();
-const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const pinecone = new Pinecone();                          // uses PINECONE_API_KEY
-const index    = pinecone.Index(process.env.PINECONE_INDEX);
-
+const app = express();
 app.use(cors({ origin: "https://venturajoyeria.com" }));
 app.use(express.json());
 
-// ─── Chat endpoint (RAG) ──────────────────────────────────────────────────────
+// ─── Initialize clients ───────────────────────────────────────────────────────
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+const pinecone = new Pinecone();  // reads PINECONE_API_KEY from env
+// If you upserted into the default (empty) namespace, use ""
+// If you used a custom namespace like "store-content", put that instead
+const index = pinecone.Index(process.env.PINECONE_INDEX, "");
+
+// ─── Chat endpoint (RAG-enabled) ─────────────────────────────────────────────
 app.post("/chat", async (req, res) => {
   try {
     const messages = req.body.messages;
     const userMsg  = messages[messages.length - 1].content;
 
-    // 1) Embed user query
-    const qEmb = (await openai.embeddings.create({
+    // 1) Embed the user’s query
+    const embeddingResponse = await openai.embeddings.create({
       model: "text-embedding-3-small",
-      input: [userMsg]
-    })).data[0].embedding;
+      input: [userMsg],
+    });
+    const queryVector = embeddingResponse.data[0].embedding;
 
-    // 2) Retrieve top‑3 chunks
-    const query = await index.query({
-      vector: qEmb,
-      topK: 3,
-      namespace: ""          // default namespace
+    // 2) Retrieve top-3 relevant chunks
+    const queryResponse = await index.query({
+      vector:          queryVector,
+      topK:            3,
+      includeMetadata: true,
     });
 
-    const contexts = query.matches
+    // 3) Build context string
+    const contexts = queryResponse.matches
       .map((m, i) => `Context ${i+1} (${m.metadata.source}): ${m.metadata.text}`)
       .join("\n\n");
 
-    // 3) Build enriched prompt
+    // 4) Prepend as system prompt
     const enriched = [
-      { role: "system",
-        content: "You are the Ventura Jewelry assistant. Use the following store information when answering:\n\n" + contexts
+      {
+        role: "system",
+        content:
+          "You are the Ventura Jewelry assistant. Use the following store information when answering:\n\n" +
+          contexts,
       },
-      ...messages
+      ...messages,
     ];
 
-    // 4) Get answer
-    const chat = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: enriched
+    // 5) Get completion from OpenAI
+    const chatResponse = await openai.chat.completions.create({
+      model:    "gpt-4o-mini",
+      messages: enriched,
     });
 
-    res.json({ reply: chat.choices[0].message });
+    res.json({ reply: chatResponse.choices[0].message });
   } catch (err) {
     console.error("Chat error:", err);
     res.status(500).json({ error: "Server error" });
