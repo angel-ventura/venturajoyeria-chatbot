@@ -1,51 +1,77 @@
-// index-docs.js  ── FINAL ──────────────────────────────────────────────────────
+// index-docs.js
 import dotenv from "dotenv";
 dotenv.config();
 
 import OpenAI from "openai";
 import pkg from "@pinecone-database/pinecone";
 
-import { fetchProducts, fetchPages } from "./fetch-shopify.js";
-import { fetchPageText }             from "./fetch-public-pages.js";
-import { chunkText }                 from "./chunker.js";
+import {
+  fetchProducts,
+  fetchPages,
+  fetchShippingPolicy,
+  fetchDiscountCodes
+} from "./fetch-shopify.js";
+import { fetchPageText } from "./fetch-public-pages.js";
+import { chunkText }     from "./chunker.js";
 
 const { Pinecone } = pkg;
 const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const pinecone = new Pinecone();
-const index    = pinecone.Index(process.env.PINECONE_INDEX);
+const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
 
 async function main() {
-  // ── Fetch content ───────────────────────────────────────────────────────────
+  console.log("Fetching Shopify products…");
   const products = await fetchProducts();
-  const pages    = await fetchPages();
-  const publics  = await Promise.all([
+  console.log(`→ products: ${products.length}`);
+
+  console.log("Fetching Shopify pages…");
+  const pages = await fetchPages();
+  console.log(`→ pages: ${pages.length}`);
+
+  console.log("Fetching shipping policy…");
+  const shipping = await fetchShippingPolicy();
+  console.log(`→ shipping policies: ${shipping.length}`);
+
+  console.log("Fetching discount codes…");
+  const discounts = await fetchDiscountCodes();
+  console.log(`→ discount codes: ${discounts.length}`);
+
+  console.log("Fetching public pages…");
+  const publicUrls = [
     "https://venturajoyeria.com/",
     "https://venturajoyeria.com/pages/sobre-nosotros",
     "https://venturajoyeria.com/policies/shipping-policy",
     "https://venturajoyeria.com/policies/refund-policy"
-  ].map(async url => {
-    const { text } = await fetchPageText(url);
-    return { id: `public:${url}`, text };
-  }));
+  ];
+  const publics = await Promise.all(publicUrls.map(fetchPageText));
+  console.log(`→ public pages: ${publics.length}`);
 
-  const allDocs = [...products, ...pages, ...publics];
+  // Combine
+  const allDocs = [
+    ...products,
+    ...pages,
+    ...shipping,
+    ...discounts,
+    ...publics.map(d => ({ id: `public:${d.url}`, text: d.text }))
+  ];
   console.log(`Total raw docs: ${allDocs.length}`);
 
-  // ── Chunk ───────────────────────────────────────────────────────────────────
-  const chunks = allDocs.flatMap(doc =>
-    chunkText(doc.text).map((piece, i) => ({
+  // Chunk
+  const chunks = allDocs.flatMap(doc => {
+    const meta = doc.metadata || {};
+    return chunkText(doc.text).map((text, i) => ({
       id:       `${doc.id}#${i}`,
-      text:     piece,
-      metadata: { source: doc.id }
-    }))
-  );
+      text,
+      metadata: { source: doc.id, chunkText: text, ...meta }
+    }));
+  });
   console.log(`Total chunks: ${chunks.length}`);
 
-  // ── Embed ───────────────────────────────────────────────────────────────────
+  // Embed
   const vectors = [];
   for (let i = 0; i < chunks.length; i += 100) {
     const batch = chunks.slice(i, i + 100);
-    console.log(`Embedding batch ${i/100 + 1}/${Math.ceil(chunks.length/100)}`);
+    console.log(`Embedding batch ${i/100+1}/${Math.ceil(chunks.length/100)}`);
     const resp = await openai.embeddings.create({
       model: "text-embedding-3-small",
       input: batch.map(c => c.text)
@@ -60,12 +86,11 @@ async function main() {
   }
   console.log(`Total vectors ready: ${vectors.length}`);
 
-  // ── Upsert in ≤100‑vector chunks to stay under 2 MB ─────────────────────────
-  const BATCH = 100;
-  for (let i = 0; i < vectors.length; i += BATCH) {
-    const slice = vectors.slice(i, i + BATCH);
-    console.log(`Upserting ${i}-${i+slice.length-1} …`);
-    await index.upsert(slice);            // ← first arg = array
+  // Upsert
+  for (let i = 0; i < vectors.length; i += 100) {
+    const slice = vectors.slice(i, i + 100);
+    console.log(`Upserting vectors ${i}-${i + slice.length - 1}…`);
+    await index.upsert(slice);
   }
   console.log("✅ All vectors upserted!");
 }
