@@ -168,7 +168,7 @@ app.post("/chat", async (req, res) => {
     });
 
     // Append a WhatsApp contact link
-    const waLink = "\n\nSi esto no resuelve tu duda, escríbenos por [WhatsApp](https://wa.me/17866147501).";
+    const waLink = '\n\nSi esto no resuelve tu duda, escríbenos por <a href="https://wa.me/17866147501" target="_blank">WhatsApp</a>.';
 
     return res.json({
       type:  "text",
