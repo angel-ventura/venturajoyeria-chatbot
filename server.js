@@ -22,89 +22,122 @@ const app = express();
 app.use(cors({ origin: "https://venturajoyeria.com" }));
 app.use(express.json());
 
-// Preload only active products
+// preload active products
 let productList = [];
 fetchProducts()
   .then(list => {
     productList = list.map(p => ({
-      title:     p.metadata.title,
-      inventory: p.metadata.inventory,
-      handle:    p.metadata.handle,
-      image:     p.metadata.image,
-      normTitle: normalize(p.metadata.title)
+      title:  p.metadata.title,
+      handle: p.metadata.handle,
+      image:  p.metadata.image,
+      price:  p.metadata.price,
+      norm:   normalize(p.metadata.title)
     }));
-    console.log(`Loaded ${productList.length} active products`);
+    console.log(`Loaded ${productList.length} products`);
   })
   .catch(console.error);
 
 app.post("/chat", async (req, res) => {
   try {
     const messages = req.body.messages || [];
-    const lastMsg  = messages.at(-1)?.content || "";
-    const userNorm = normalize(lastMsg);
+    const last     = messages.at(-1)?.content || "";
+    const normLast = normalize(last);
 
-    // 1) Exact product title matches
+    // 1) Exact title match
     const exact = productList.filter(p =>
-      p.normTitle.includes(userNorm) || userNorm.includes(p.normTitle)
+      p.norm.includes(normLast) || normLast.includes(p.norm)
     );
     if (exact.length === 1) {
       const p = exact[0];
       return res.json({
         type: "product",
-        reply: `Sí, tenemos ${p.title} en stock: ${p.inventory} unidades.`,
+        reply: `Aquí está lo que encontré:`,
         productCard: {
           title: p.title,
           url:   `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
-          image: p.image
+          image: p.image,
+          price: p.price
         }
       });
-    } else if (exact.length > 1) {
+    }
+    if (exact.length > 1) {
       const cards = exact.map(p => ({
-        title:     p.title,
-        url:       `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
-        image:     p.image,
-        inventory: p.inventory
+        title: p.title,
+        url:   `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
+        image: p.image,
+        price: p.price
       }));
       return res.json({
         type:         "productList",
-        reply:        `Encontré varias coincidencias para “${lastMsg}”:`,
+        reply:        `Encontré varias coincidencias:`,
         productCards: cards
       });
     }
 
-    // 2) Category fallback -> products
+    // 2) Category + subcategory (e.g. "cadenas monacos")
     const categories = [
-      { regex: /\baretes?\b/,    term: "arete"    },
-      { regex: /\bcadenas?\b/,   term: "cadena"   },
-      { regex: /\bcolgantes?\b/, term: "colgante" },
-      { regex: /\bpulseras?\b/,  term: "pulsera"  },
-      { regex: /\btobilleras?\b/,term: "tobillera"},
-      { regex: /\bcollares?\b/,  term: "collar"   }
+      { regex: /\baretes?\b/,    handle: "aretes-y-argollas" },
+      { regex: /\bcadenas?\b/,   handle: "cadenas"           },
+      { regex: /\bcolgantes?\b/, handle: "colgantes"         },
+      { regex: /\bpulseras?\b/,  handle: "pulseras"          },
+      { regex: /\btobilleras?\b/,handle: "tobilleras"        },
+      { regex: /\b(collares?)\b/,handle: "collares"          }
     ];
-    const cat = categories.find(c => c.regex.test(userNorm));
+    const cat = categories.find(c => c.regex.test(normLast));
     if (cat) {
-      const list = productList.filter(p => p.normTitle.includes(cat.term));
-      if (list.length) {
-        const cards = list.slice(0,5).map(p => ({
-          title:     p.title,
-          url:       `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
-          image:     p.image,
-          inventory: p.inventory
+      // 2a) If they ask "ver todas" or "todas"
+      if (/\btoda(s)?\b|\bver todas?\b/.test(normLast)) {
+        return res.json({
+          type: "collection",
+          reply: `Mira toda nuestra colección:`,
+          collection: {
+            title: cat.handle.replace(/-/g," ").toUpperCase(),
+            url:   `https://venturajoyeria.com/collections/${cat.handle}`,
+            image: null
+          }
+        });
+      }
+      // 2b) If they specify subterm (e.g. "monacos")
+      const leftover = normLast.replace(cat.regex, "").trim();
+      if (leftover) {
+        const subMatches = productList.filter(p => p.norm.includes(leftover));
+        if (subMatches.length) {
+          const cards = subMatches.map(p => ({
+            title: p.title,
+            url:   `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
+            image: p.image,
+            price: p.price
+          }));
+          return res.json({
+            type:         "productList",
+            reply:        `Aquí están nuestras ${leftover}:`,
+            productCards: cards
+          });
+        }
+      }
+      // 2c) Generic category fallback to some items
+      const catMatches = productList.filter(p => p.norm.includes(cat.handle.slice(0,-1)));
+      if (catMatches.length) {
+        const cards = catMatches.slice(0,5).map(p => ({
+          title: p.title,
+          url:   `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
+          image: p.image,
+          price: p.price
         }));
         return res.json({
           type:         "productList",
-          reply:        `Aquí algunas ${cat.term}s:`,
+          reply:        `Algunas ${cat.handle.replace(/-/g," ")} que ofrecemos:`,
           productCards: cards
         });
       }
-      // 2b) No matching active products → point to collection
+      // fallback: collection
       return res.json({
         type: "collection",
-        reply: `Visita nuestra colección de ${cat.term}s:`,
+        reply: `Visita nuestra colección completa:`,
         collection: {
-          title: `Cadenas`,  // adjust per cat.term if desired
-          url:   `https://venturajoyeria.com/collections/cadenas`,
-          image: null       // or provide a generic collection image URL
+          title: cat.handle.replace(/-/g," ").toUpperCase(),
+          url:   `https://venturajoyeria.com/collections/${cat.handle}`,
+          image: null
         }
       });
     }
@@ -112,16 +145,16 @@ app.post("/chat", async (req, res) => {
     // 3) RAG fallback
     const emb = await openai.embeddings.create({
       model: "text-embedding-3-small",
-      input: [lastMsg]
+      input: [last]
     });
     const qEmb = emb.data[0].embedding;
-    const qry = await index.query({
+    const queryRes = await index.query({
       vector:          qEmb,
       topK:            3,
       includeMetadata: true
     });
-    const contexts = qry.matches
-      .map((m,i) => `Contexto ${i+1} (${m.metadata.source}): ${m.metadata.chunkText}`)
+    const contexts = queryRes.matches
+      .map((m,i) => `Contexto ${i+1}: ${m.metadata.chunkText}`)
       .join("\n\n");
     const enriched = [
       { role: "system", content: "Usa esta info:\n\n" + contexts },
