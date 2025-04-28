@@ -93,7 +93,7 @@ app.use(express.json());
 
 const waCard = {
   title: "WhatsApp Ventura Jewelry",
-  url:   "https://wa.me/13058902496"
+  url:   "https://wa.me/17866147501"
 };
 
 app.post("/chat", async (req, res) => {
@@ -103,7 +103,7 @@ app.post("/chat", async (req, res) => {
     const norm = normalize(last);
 
     // 0) explicit human/WhatsApp request
-    if (/\b(whatsapp|hablar con|vendedora|humano|asesor|representante)\b/.test(norm)) {
+    if (/\b(whatsapp|hablar con|vendedora|humano|asesor|problema|duda|representante)\b/.test(norm)) {
       return res.json({
         type:       "collection",
         reply:      "Claro, aquí tienes un enlace directo a nuestro equipo:",
