@@ -1,4 +1,4 @@
-// server.js  —  deploy this file as-is
+// server.js  —  cards always, “foto(s)/imagen(es)” ignored
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -22,8 +22,10 @@ const stop = new Set([
   "oro","quiero"
 ]);
 
+// words we IGNORE when matching products
 const generic = new Set([
-  "ver","mostrar","ensename","enseñame","enséname"
+  "ver","mostrar","ensename","enseñame","enséname",
+  "foto","fotos","imagen","imagenes","imágenes"
 ]);
 
 const tokenize = q =>
@@ -43,7 +45,7 @@ fetchProducts().then(list => {
     norm:   normalize(p.metadata.title)
   }));
   console.log(`✅ Loaded ${PRODUCTS.length} active products`);
-}).catch(console.error);
+});
 
 /* ──────────────────── collections data ───────────────────── */
 const COLLS = [
@@ -71,31 +73,30 @@ app.post("/chat", async (req, res) => {
     const norm   = normalize(user);
     const tokens = tokenize(user);
 
-    const searchTokens = tokens.filter(t => !generic.has(t));  // ignore verbs
-    const askAll       = /\btodas?\b/.test(norm);              // only “toda / todas”
+    const searchTokens = tokens.filter(t => !generic.has(t));
+    const askAll       = /\btodas?\b/.test(norm);   // only “toda / todas”
 
-    /* ── 1) product-card search (ALL tokens must appear) ── */
-    let matches = [];
+    /* ── 1) product-card search ── */
     if (searchTokens.length) {
-      matches = PRODUCTS.filter(p =>
+      const hits = PRODUCTS.filter(p =>
         searchTokens.every(t => p.norm.includes(t))
       );
-      if (matches.length) {
-        const cards = matches.map(p => ({
+      if (hits.length) {
+        const cards = hits.map(p => ({
           title: p.title,
           url:   `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
           image: p.image,
           price: p.price
         }));
         return res.json(
-          matches.length === 1
+          hits.length === 1
             ? { type:"product", reply:"Aquí lo encontré:", productCard: cards[0] }
             : { type:"productList", reply:"Encontré estas opciones:", productCards: cards }
         );
       }
     }
 
-    /* ── 2) collection link (only if user asked for “todas…”) ── */
+    /* ── 2) collection link (only if user asked “todas…”) ── */
     if (askAll) {
       const col = COLLS.find(([name]) =>
         tokens.some(t => normalize(name).includes(t))
@@ -120,20 +121,18 @@ app.post("/chat", async (req, res) => {
     const ctx = rag.matches
       .map((m,i)=>`Contexto ${i+1}: ${m.metadata.chunkText}`)
       .join("\n\n");
-
     const enriched = [
       { role:"system", content:"Usa esta información de la tienda:\n\n"+ctx },
       ...msgs
     ];
     const chat = await openai.chat.completions.create({
-      model:"gpt-4o-mini",
+      model: "gpt-4o-mini",
       messages: enriched
     });
-
     res.json({ type:"text", reply: chat.choices[0].message.content });
 
   } catch (err) {
-    console.error("Chat error:", err);
+    console.error(err);
     res.status(500).json({ type:"text", reply:"Lo siento, ocurrió un error." });
   }
 });
