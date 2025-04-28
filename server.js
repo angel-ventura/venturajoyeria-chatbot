@@ -1,4 +1,4 @@
-// server.js
+// server.js  —  adds WhatsApp link on RAG fallback
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -17,72 +17,69 @@ const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
 const normalize = s =>
   s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
-// Stop-words we drop entirely
 const stop = new Set([
   "de","del","la","las","el","los","para","en","con","y",
   "oro","quiero"
 ]);
 
-// Generic filler words to ignore in a search
 const generic = new Set([
   "ver","mostrar","ensename","enseñame","enséname",
   "foto","fotos","imagen","imagenes","imágenes",
   "tiene","tienen","hay","disponible","disponibles"
 ]);
 
-// Words that are “optional” qualifiers (karats, sizes, etc.)
 const optional = new Set([
   "10k","14k","18k","24k","10kt","14kt","18kt","kt","k",
   "g","gr","gramos","mm","cm","in","inch","pulgada","pulgadas",
   "largo","ancho","peso","talla"
 ]);
 
-// Tiny Levenshtein ≤1 for fuzzy matching
 function isClose(a,b){
   if (Math.abs(a.length-b.length)>1) return false;
   if (a.length>b.length)[a,b]=[b,a];
   let i=0, edits=0;
-  while(i<a.length && edits<=1){
-    if(a[i]===b[i]){ i++; continue; }
+  while(i<a.length&&edits<=1){
+    if(a[i]===b[i]){i++;continue;}
     edits++;
     if(a.length===b.length) i++;
-    b = b.slice(0,i) + b.slice(i+1);
+    b=b.slice(0,i)+b.slice(i+1);
   }
   return edits + (b.length - i) <= 1;
 }
 
-// Tokenize and normalize user input
 const tokenize = q =>
   normalize(q)
     .split(/\s+/)
     .filter(w => w && !stop.has(w))
-    .map(w => w.replace(/s$/, ""));  // singularize
+    .map(w => w.replace(/s$/, ""));
 
 /* ─────────── Preload products ─────────── */
 let PRODUCTS = [];
-fetchProducts().then(arr => {
-  PRODUCTS = arr.map(p => ({
-    title:  p.metadata.title,
-    handle: p.metadata.handle,
-    image:  p.metadata.image,
-    price:  p.metadata.price,
-    norm:   normalize(p.metadata.title)
-  }));
-  console.log(`✅ Loaded ${PRODUCTS.length} published products`);
-}).catch(console.error);
+fetchProducts()
+  .then(arr => {
+    PRODUCTS = arr.map(p => ({
+      title:  p.metadata.title,
+      handle: p.metadata.handle,
+      image:  p.metadata.image,
+      price:  p.metadata.price,
+      norm:   normalize(p.metadata.title)
+    }));
+    console.log(`✅ Loaded ${PRODUCTS.length} published products`);
+  })
+  .catch(console.error);
 
 /* ─────────── Collections ─────────── */
 const COLLS = [
-  ["Cadenas de Oro",               "cadenas-de-oro"],
-  ["Gargantillas de Oro",          "gargantillas-de-oro"],
-  ["Anillos de Compromiso de Oro", "anillos-de-compromiso-de-oro"],
-  ["Anillo Oro Hombre",            "anillo-oro-hombre"],
-  ["Anillo Oro Mujer",             "anillo-oro-mujer"],
-  ["Aretes de Oro",                "aretes-de-oro"],
-  ["Dijes de Oro",                 "dijes-de-oro"],
-  ["Pulseras de Oro para Niños",   "pulseras-de-oro-para-ninos"],
-  ["Pulseras de Oro",              "pulseras-de-oro"],
-  ["Tobilleras de Oro",            "tobilleras-de-oro"]
+  ["Cadenas de Oro","cadenas-de-oro"],
+  ["Gargantillas de Oro","gargantillas-de-oro"],
+  ["Anillos de Compromiso de Oro","anillos-de-compromiso-de-oro"],
+  ["Anillo Oro Hombre","anillo-oro-hombre"],
+  ["Anillo Oro Mujer","anillo-oro-mujer"],
+  ["Aretes de Oro","aretes-de-oro"],
+  ["Dijes de Oro","dijes-de-oro"],
+  ["Pulseras de Oro para Niños","pulseras-de-oro-para-ninos"],
+  ["Pulseras de Oro","pulseras-de-oro"],
+  ["Tobilleras de Oro","tobilleras-de-oro"]
 ];
 
 /* ─────────── Express Setup ─────────── */
@@ -96,39 +93,30 @@ app.post("/chat", async (req, res) => {
     const last = msgs.at(-1)?.content ?? "";
     const norm = normalize(last);
 
-    // 1) Extract tokens from last user message
+    // 1) Tokenize & strip generic/optional
     let tokens = tokenize(last);
-    // 2) Drop generic & optional qualifier words
     let searchTokens = tokens.filter(t => !generic.has(t) && !optional.has(t));
 
-    // 3) If this message yields no searchTokens (e.g. "quiero ver fotos"),
-    //    look backwards for the most recent user turn that did produce tokens.
+    // 2) If no tokens (e.g. “quiero ver fotos”), walk backwards to last valid user query
     if (searchTokens.length === 0) {
       for (let i = msgs.length - 2; i >= 0; i--) {
         if (msgs[i].role === "user") {
-          const prevTok = tokenize(msgs[i].content)
-            .filter(t => !generic.has(t) && !optional.has(t));
-          if (prevTok.length) {
-            searchTokens = prevTok;
-            break;
-          }
+          const prev = tokenize(msgs[i].content).filter(t => !generic.has(t) && !optional.has(t));
+          if (prev.length) { searchTokens = prev; break; }
         }
       }
     }
 
-    // 4) Check for collection requests ("toda" / "todas")
     const askAll = /\btodas?\b/.test(norm);
 
-    /* ── Product Search ── */
+    /* ── 1) Product cards ── */
     if (searchTokens.length) {
-      const hits = PRODUCTS.filter(p => {
-        // All descriptive tokens must match (substr or fuzzy)
-        return searchTokens.every(t =>
+      const hits = PRODUCTS.filter(p =>
+        searchTokens.every(t =>
           p.norm.includes(t) ||
           p.norm.split(/\s+/).some(w => isClose(t, w))
-        );
-      });
-
+        )
+      );
       if (hits.length) {
         const cards = hits.map(p => ({
           title: p.title,
@@ -138,13 +126,13 @@ app.post("/chat", async (req, res) => {
         }));
         return res.json(
           hits.length === 1
-            ? { type: "product",     reply: "Aquí lo encontré:",        productCard: cards[0] }
-            : { type: "productList", reply: "Encontré estas opciones:", productCards: cards }
+            ? { type:"product",     reply:"Aquí lo encontré:",        productCard: cards[0] }
+            : { type:"productList", reply:"Encontré estas opciones:", productCards: cards }
         );
       }
     }
 
-    /* ── Collection Link ── */
+    /* ── 2) Collection link ── */
     if (askAll) {
       const col = COLLS.find(([name]) =>
         tokens.some(t => normalize(name).includes(t))
@@ -154,12 +142,12 @@ app.post("/chat", async (req, res) => {
         return res.json({
           type:       "collection",
           reply:      `Visita nuestra colección de ${label}:`,
-          collection: { title: label, url: `https://venturajoyeria.com/collections/${handle}` }
+          collection: { title: label, url:`https://venturajoyeria.com/collections/${handle}` }
         });
       }
     }
 
-    /* ── RAG Fallback ── */
+    /* ── 3) RAG fallback + WhatsApp link ── */
     const emb = await openai.embeddings.create({
       model: "text-embedding-3-small",
       input: [last]
@@ -171,22 +159,31 @@ app.post("/chat", async (req, res) => {
       .join("\n\n");
 
     const enriched = [
-      { role: "system", content: "Usa esta información de la tienda:\n\n" + ctx },
+      { role:"system", content:"Usa esta información de la tienda:\n\n" + ctx },
       ...msgs
     ];
-
     const chat = await openai.chat.completions.create({
       model:    "gpt-4o-mini",
       messages: enriched
     });
 
-    return res.json({ type: "text", reply: chat.choices[0].message.content });
+    // Append a WhatsApp contact link
+    const waLink = "\n\nSi esto no resuelve tu duda, escríbenos por [WhatsApp](https://wa.me/17866147501).";
+
+    return res.json({
+      type:  "text",
+      reply: chat.choices[0].message.content + waLink
+    });
 
   } catch (err) {
     console.error("Chat error:", err);
-    return res.status(500).json({ type: "text", reply: "Lo siento, ocurrió un error." });
+    // On error, provide WhatsApp link too
+    return res.status(500).json({
+      type:  "text",
+      reply: "Lo siento, ocurrió un error. Para ayuda inmediata, contáctanos por WhatsApp: https://wa.me/17866147501"
+    });
   }
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`🚀 Chat server running on ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Chat server listening on ${PORT}`));
