@@ -6,7 +6,56 @@ dotenv.config();
 const SHOP  = process.env.SHOPIFY_SHOP;
 const TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
 
-// … your existing fetchProducts & fetchPages here …
+/**
+ * Fetch all products + variants via cursor-based pagination.
+ */
+export async function fetchProducts() {
+  let allItems = [];
+  let url = `https://${SHOP}/admin/api/2025-01/products.json?limit=250&fields=id,title,body_html,variants`;
+  while (url) {
+    const res = await fetch(url, {
+      headers: { "X-Shopify-Access-Token": TOKEN }
+    });
+    if (!res.ok) throw new Error(`Shopify fetchProducts ${res.status}: ${await res.text()}`);
+    const { products = [] } = await res.json();
+    allItems = allItems.concat(products);
+    const link = res.headers.get("link");
+    if (link && link.includes('rel="next"')) {
+      const m = link.match(/<([^>]+)>;\s*rel="next"/);
+      url = m ? m[1] : null;
+    } else {
+      url = null;
+    }
+  }
+  return allItems.map(p => {
+    const title = p.title || "Sin título";
+    const desc  = (p.body_html || "").replace(/<[^>]+>/g, "").trim();
+    const inventory = Array.isArray(p.variants)
+      ? p.variants.reduce((sum, v) => sum + (v.inventory_quantity || 0), 0)
+      : 0;
+    return {
+      id: `product:${p.id}`,
+      text: `${title}\n\n${desc}`,
+      metadata: { title, inventory, handle: p.handle, image: p.image, price: p.price }
+    };
+  });
+}
+
+/**
+ * Fetch your “Sobre Nosotros” page by title.
+ */
+export async function fetchPages() {
+  const url = `https://${SHOP}/admin/api/2025-01/pages.json?limit=50`;
+  const res = await fetch(url, { headers: { "X-Shopify-Access-Token": TOKEN } });
+  const { pages = [] } = await res.json();
+  const wanted = ["Sobre Nosotros"];
+  return pages
+    .filter(p => p.title && wanted.includes(p.title))
+    .map(p => ({
+      id:   `page:${p.id}`,
+      text: `${p.title}\n\n${(p.body_html || "").replace(/<[^>]+>/g, "")}`
+    }));
+}
 
 /**
  * Fetch Shipping Policy via Policies API.
@@ -17,31 +66,39 @@ export async function fetchShippingPolicy() {
   const { policies = [] } = await res.json();
   const shipping = policies.find(p => /shipping/i.test(p.title || ""));
   if (!shipping) return [];
-  return [{ id:`policy:shipping`, text:`${shipping.title}\n\n${shipping.body || ""}` }];
+  return [{
+    id:   `policy:shipping`,
+    text: `${shipping.title}\n\n${shipping.body || ""}`
+  }];
 }
 
 /**
  * Fetch active Discount Codes via Price Rules + Discount Codes API.
  */
 export async function fetchDiscountCodes() {
-  const prUrl = `https://${SHOP}/admin/api/2025-01/price_rules.json?limit=250`;
-  const prRes = await fetch(prUrl, { headers:{ "X-Shopify-Access-Token": TOKEN } });
+  const prRes = await fetch(
+    `https://${SHOP}/admin/api/2025-01/price_rules.json?limit=250`,
+    { headers: { "X-Shopify-Access-Token": TOKEN } }
+  );
   const { price_rules = [] } = await prRes.json();
-
   const codes = [];
   for (const rule of price_rules) {
     if (!rule.starts_at || (rule.ends_at && new Date(rule.ends_at) < new Date())) continue;
-    const dcUrl = `https://${SHOP}/admin/api/2025-01/price_rules/${rule.id}/discount_codes.json`;
-    const dcRes = await fetch(dcUrl, { headers:{ "X-Shopify-Access-Token": TOKEN } });
+    const dcRes = await fetch(
+      `https://${SHOP}/admin/api/2025-01/price_rules/${rule.id}/discount_codes.json`,
+      { headers: { "X-Shopify-Access-Token": TOKEN } }
+    );
     const { discount_codes = [] } = await dcRes.json();
-    discount_codes.forEach(dc => {
+    for (const dc of discount_codes) {
       if (dc.code) {
-        codes.push({ id:`discount:${dc.id}`, text:`Code: ${dc.code} (${rule.value_type} ${rule.value})` });
+        codes.push({
+          id:   `discount:${dc.id}`,
+          text: `Code: ${dc.code} (${rule.value_type} ${rule.value})`
+        });
       }
-    });
+    }
   }
   return codes;
 }
 
-// Finally, export the functions you need:
-export { fetchProducts, fetchPages, fetchShippingPolicy, fetchDiscountCodes };
+// **No bottom “export { … }” block needed** — all four functions are already exported above.
