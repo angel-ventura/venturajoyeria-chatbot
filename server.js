@@ -22,7 +22,7 @@ const app = express();
 app.use(cors({ origin: "https://venturajoyeria.com" }));
 app.use(express.json());
 
-// preload product metadata
+// Preload products
 let productList = [];
 fetchProducts()
   .then(list => {
@@ -44,27 +44,12 @@ app.post("/chat", async (req, res) => {
     const lastMsg  = messages.at(-1)?.content || "";
     const userNorm = normalize(lastMsg);
 
-    // 1) Find matching products
-    const matches = productList.filter(p =>
+    // 1) Direct title match
+    const exactMatches = productList.filter(p =>
       p.normTitle.includes(userNorm) || userNorm.includes(p.normTitle)
     );
-
-    if (matches.length >= 2) {
-      // multiple products
-      const cards = matches.map(p => ({
-        title: p.title,
-        url:   `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
-        image: p.image,
-        inventory: p.inventory
-      }));
-      return res.json({
-        type:        "productList",
-        reply:       `Encontré varias coincidencias para "${lastMsg}":`,
-        productCards: cards
-      });
-    } else if (matches.length === 1) {
-      // single product
-      const p = matches[0];
+    if (exactMatches.length === 1) {
+      const p = exactMatches[0];
       return res.json({
         type: "product",
         reply: `Sí, tenemos ${p.title} en stock: ${p.inventory} unidades.`,
@@ -75,13 +60,53 @@ app.post("/chat", async (req, res) => {
         }
       });
     }
+    if (exactMatches.length > 1) {
+      const cards = exactMatches.map(p => ({
+        title:     p.title,
+        url:       `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
+        image:     p.image,
+        inventory: p.inventory
+      }));
+      return res.json({
+        type:         "productList",
+        reply:        `Encontré varias coincidencias para "${lastMsg}":`,
+        productCards: cards
+      });
+    }
 
-    // 2) Fallback to RAG
-    const emb = await openai.embeddings.create({
+    // 2) Category fallback
+    const categories = [
+      { regex: /\baretes?\b/,    term: "arete"    },
+      { regex: /\bcadenas?\b/,   term: "cadena"   },
+      { regex: /\bcollares?\b/,  term: "collar"   },
+      { regex: /\bpulseras?\b/,  term: "pulsera"  },
+      { regex: /\btobilleras?\b/,term: "tobillera"},
+      { regex: /\bcolgantes?\b/, term: "colgante" }
+    ];
+    let cat = categories.find(c => c.regex.test(userNorm));
+    if (cat) {
+      const list = productList.filter(p => p.normTitle.includes(cat.term));
+      if (list.length) {
+        const cards = list.slice(0, 5).map(p => ({
+          title:     p.title,
+          url:       `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
+          image:     p.image,
+          inventory: p.inventory
+        }));
+        return res.json({
+          type:         "productList",
+          reply:        `Aquí tienes algunas ${cat.term}s que manejamos:`,
+          productCards: cards
+        });
+      }
+    }
+
+    // 3) RAG fallback
+    const embRes = await openai.embeddings.create({
       model: "text-embedding-3-small",
       input: [lastMsg]
     });
-    const qEmb = emb.data[0].embedding;
+    const qEmb = embRes.data[0].embedding;
 
     const queryRes = await index.query({
       vector:          qEmb,
