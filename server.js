@@ -1,7 +1,8 @@
-// server.js  — updated to ignore greetings/fillers in product search
+// server.js
 import dotenv from "dotenv";
 dotenv.config();
 
+import fs      from "fs";
 import express from "express";
 import cors    from "cors";
 import OpenAI  from "openai";
@@ -13,7 +14,10 @@ const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const pinecone = new Pinecone();
 const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
 
-/* ─────────── helpers ─────────── */
+// ───── load your strong‐prompt guidelines ─────
+const GUIDELINES = fs.readFileSync("./guidelines.txt", "utf8").trim() + "\n\n";
+
+// ───── helpers ─────
 const normalize = s =>
   s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
@@ -22,14 +26,10 @@ const stop = new Set([
 ]);
 
 const generic = new Set([
-  // greetings / fillers
   "hola","buenas","buenos","dias","días","tardes","noches",
   "hey","hello","hi","??","???",
-  // generic actions
   "ver","mostrar","ensename","enseñame","enséname",
-  // image requests
   "foto","fotos","imagen","imagenes","imágenes",
-  // availability
   "tiene","tienen","hay","disponible","disponibles"
 ]);
 
@@ -39,7 +39,6 @@ const optional = new Set([
   "largo","ancho","peso","talla"
 ]);
 
-/* Levenshtein ≤2 */
 function isClose(a,b){
   if (Math.abs(a.length-b.length) > 2) return false;
   if (a.length > b.length) [a,b] = [b,a];
@@ -59,20 +58,22 @@ const tokenize = q =>
     .filter(w => w && !stop.has(w))
     .map(w => w.replace(/s$/,""));
 
-/* ───────── preload products ───────── */
+// ───── preload products ─────
 let PRODUCTS = [];
-fetchProducts().then(list => {
-  PRODUCTS = list.map(p => ({
-    title:  p.metadata.title,
-    handle: p.metadata.handle,
-    image:  p.metadata.image,
-    price:  p.metadata.price,
-    norm:   normalize(p.metadata.title)
-  }));
-  console.log(`✅ Loaded ${PRODUCTS.length} published products`);
-}).catch(console.error);
+fetchProducts()
+  .then(list => {
+    PRODUCTS = list.map(p => ({
+      title:  p.metadata.title,
+      handle: p.metadata.handle,
+      image:  p.metadata.image,
+      price:  p.metadata.price,
+      norm:   normalize(p.metadata.title)
+    }));
+    console.log(`✅ Loaded ${PRODUCTS.length} published products`);
+  })
+  .catch(err => console.error("Error loading products:", err));
 
-/* ───────── collections ───────── */
+// ───── collections ─────
 const COLLS = [
   ["Cadenas de Oro","cadenas-de-oro"],
   ["Gargantillas de Oro","gargantillas-de-oro"],
@@ -86,13 +87,13 @@ const COLLS = [
   ["Tobilleras de Oro","tobilleras-de-oro"]
 ];
 
-/* ───────── express setup ───────── */
+// ───── express setup ─────
 const app = express();
 app.use(cors({ origin: "https://venturajoyeria.com" }));
 app.use(express.json());
 
 const waCard = {
-  title: "WhatsApp Ventura Jewelry",
+  title: "Chatea con nosotros por WhatsApp",
   url:   "https://wa.me/13058902496"
 };
 
@@ -102,7 +103,7 @@ app.post("/chat", async (req, res) => {
     const last = msgs.at(-1)?.content ?? "";
     const norm = normalize(last);
 
-    // 0) explicit human/WhatsApp request
+    // 0) “hablar con” → WhatsApp link
     if (/\b(whatsapp|hablar con|vendedora|humano|asesor|representante)\b/.test(norm)) {
       return res.json({
         type:       "collection",
@@ -111,13 +112,11 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // 1) build search tokens
+    // 1) build meaningful tokens
     let tokens = tokenize(last);
     let search = tokens.filter(t => !generic.has(t) && !optional.has(t));
-
-    // if no tokens, walk back to last valid user query
-    if (search.length === 0) {
-      for (let i = msgs.length - 2; i >= 0; i--) {
+    if (!search.length) {
+      for (let i = msgs.length-2; i >= 0; i--) {
         if (msgs[i].role === "user") {
           const prev = tokenize(msgs[i].content)
             .filter(t => !generic.has(t) && !optional.has(t));
@@ -128,7 +127,7 @@ app.post("/chat", async (req, res) => {
 
     const askAll = /\b(todas?)\b/.test(norm);
 
-    // 2) product cards
+    // 2) product cards by title
     if (search.length) {
       const hits = PRODUCTS.filter(p =>
         search.every(t =>
@@ -151,7 +150,7 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    // 3) collection link
+    // 3) “todas” → collection link
     if (askAll) {
       const col = COLLS.find(([name]) =>
         tokens.some(t => normalize(name).includes(t))
@@ -166,26 +165,39 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    // 4) RAG fallback → GPT answer + WhatsApp card
+    // 4) RAG + GPT fallback
     const emb = await openai.embeddings.create({
       model: "text-embedding-3-small",
       input: [last]
     });
     const vec = emb.data[0].embedding;
-    const rag = await index.query({ vector: vec, topK: 3, includeMetadata: true });
+    const rag = await index.query({
+      vector:          vec,
+      topK:            3,
+      includeMetadata: true
+    });
+
     const ctx = rag.matches
-      .map((m, i) => `Contexto ${i+1}: ${m.metadata.chunkText}`)
+      .map((m,i) => `Contexto ${i+1}: ${m.metadata.chunkText}`)
       .join("\n\n");
 
     const enriched = [
-      { role: "system", content: "Usa esta información de la tienda:\n\n" + ctx },
+      // 1) your static guidelines
+      { role: "system", content: GUIDELINES },
+
+      // 2) the dynamic RAG contexts
+      { role: "system", content: "Contextos de la tienda:\n\n" + ctx },
+
+      // 3) the conversation history
       ...msgs
     ];
+
     const chat = await openai.chat.completions.create({
       model:    "gpt-4o-mini",
       messages: enriched
     });
 
+    // always include WhatsApp fallback link as part of type
     return res.json({
       type:       "text+collection",
       reply:      chat.choices[0].message.content,
@@ -196,7 +208,7 @@ app.post("/chat", async (req, res) => {
     console.error("Chat error:", err);
     return res.status(500).json({
       type:       "collection",
-      reply:      "Lo siento, ocurrió un error. Contáctanos directamente:",
+      reply:      "Lo siento, ocurrió un error. Contáctanos:",
       collection: waCard
     });
   }
