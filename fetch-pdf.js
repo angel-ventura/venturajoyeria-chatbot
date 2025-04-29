@@ -1,17 +1,21 @@
 // fetch-pdf.js
 import fs from "fs";
-import pdf from "pdf-parse";
 
-/**
- * Read a PDF and break into paragraph‐sized chunks.
- * @param {string} filePath – path to your PDF (e.g. "instructions.pdf")
- * @param {string}  idPrefix – how to namespace these chunks
- */
 export async function fetchPdfChunks(filePath = "instructions.pdf", idPrefix = "instructions") {
-  const dataBuffer = fs.readFileSync(filePath);
-  const { text }    = await pdf(dataBuffer);
+  // If the PDF isn’t in the repo (e.g. on CI), just skip it:
+  if (!fs.existsSync(filePath)) {
+    console.warn(`⚠️  ${filePath} not found, skipping PDF instructions.`);
+    return [];
+  }
 
-  // split on double‐newlines, drop very short pieces
+  // only now do we load pdf-parse (and only if we need it):
+  const pdfMod  = await import("pdf-parse/lib/pdf-parse.js");
+  const parse   = pdfMod.default ?? pdfMod;
+
+  const dataBuf = fs.readFileSync(filePath);
+  const { text } = await parse(dataBuf);
+
+  // split on double‐newlines into “paragraph” chunks
   const paras = text
     .split(/\n\s*\n+/)
     .map(p => p.trim())
@@ -22,3 +26,4 @@ export async function fetchPdfChunks(filePath = "instructions.pdf", idPrefix = "
     text: txt
   }));
 }
+
