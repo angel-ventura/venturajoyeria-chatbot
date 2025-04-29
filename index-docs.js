@@ -5,15 +5,9 @@ dotenv.config();
 import OpenAI from "openai";
 import pkg    from "@pinecone-database/pinecone";
 
-import {
-  fetchProducts,
-  fetchPages,
-  fetchShippingPolicy,
-  fetchDiscountCodes
-} from "./fetch-shopify.js";
-import { fetchPageText }  from "./fetch-public-pages.js";
-import { fetchPdfChunks } from "./fetch-pdf.js";
-import { chunkText }      from "./chunker.js";
+import { fetchProducts, fetchPages, fetchShippingPolicy, fetchDiscountCodes } from "./fetch-shopify.js";
+import { fetchPageText }     from "./fetch-public-pages.js";
+import { chunkText }         from "./chunker.js";
 
 const { Pinecone } = pkg;
 const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -21,55 +15,65 @@ const pinecone = new Pinecone();
 const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
 
 async function main() {
-  console.log("1️⃣ Shopify products…");
-  const products = await fetchProducts(); console.log(`   → ${products.length}`);
-  console.log("2️⃣ Shopify pages…");
-  const pages    = await fetchPages();    console.log(`   → ${pages.length}`);
-  console.log("3️⃣ Shipping policy…");
-  const shipping = await fetchShippingPolicy(); console.log(`   → ${shipping.length}`);
-  console.log("4️⃣ Discount codes…");
-  const discounts = await fetchDiscountCodes();  console.log(`   → ${discounts.length}`);
-  console.log("5️⃣ Public pages…");
+  console.log("Fetching Shopify products…");
+  const products = await fetchProducts();
+  console.log(`→ products: ${products.length}`);
+
+  console.log("Fetching Shopify pages…");
+  const pages = await fetchPages();
+  console.log(`→ pages: ${pages.length}`);
+
+  console.log("Fetching shipping policy…");
+  const shipping = await fetchShippingPolicy();
+  console.log(`→ shipping: ${shipping.length}`);
+
+  console.log("Fetching discount codes…");
+  const discounts = await fetchDiscountCodes();
+  console.log(`→ discounts: ${discounts.length}`);
+
+  console.log("Fetching public site pages…");
   const publicUrls = [
     "https://venturajoyeria.com/",
     "https://venturajoyeria.com/pages/sobre-nosotros",
     "https://venturajoyeria.com/policies/shipping-policy",
     "https://venturajoyeria.com/policies/refund-policy"
   ];
-  const publics = await Promise.all(publicUrls.map(fetchPageText));
-  console.log(`   → ${publics.length}`);
-  console.log("6️⃣ Instruction PDF…");
-  const pdfChunks = await fetchPdfChunks("instructions.pdf", "instr");
-  console.log(`   → ${pdfChunks.length}`);
+  const publics = await Promise.all(publicUrls.map(async url => {
+    const { text } = await fetchPageText(url);
+    return { id: `public:${url}`, text };
+  }));
+  console.log(`→ public pages: ${publics.length}`);
 
+  // Combine all
   const allDocs = [
     ...products,
     ...pages,
     ...shipping,
     ...discounts,
-    ...publics.map(d=>({ id:`public:${d.url}`, text:d.text })),
-    ...pdfChunks
+    ...publics
   ];
-  console.log(`📦 Total docs: ${allDocs.length}`);
+  console.log(`Total raw docs: ${allDocs.length}`);
 
+  // Chunk
   const chunks = allDocs.flatMap(doc =>
-    chunkText(doc.text).map((t,i)=>({
+    chunkText(doc.text).map((txt,i) => ({
       id:       `${doc.id}#${i}`,
-      text:     t,
+      text:     txt,
       metadata: { source: doc.id }
     }))
   );
-  console.log(`✂️ Total chunks: ${chunks.length}`);
+  console.log(`Total chunks: ${chunks.length}`);
 
+  // Embed in batches
   const vectors = [];
-  for (let i=0; i<chunks.length; i+=100) {
-    console.log(`🔢 Embedding batch ${i/100+1}/${Math.ceil(chunks.length/100)}`);
-    const batch = chunks.slice(i,i+100);
-    const resp  = await openai.embeddings.create({
+  for (let i = 0; i < chunks.length; i += 100) {
+    const batch = chunks.slice(i, i + 100);
+    console.log(`Embedding batch ${i/100+1}/${Math.ceil(chunks.length/100)}`);
+    const resp = await openai.embeddings.create({
       model: "text-embedding-3-small",
-      input: batch.map(c=>c.text)
+      input: batch.map(c => c.text)
     });
-    resp.data.forEach((e,idx)=>{
+    resp.data.forEach((e, idx) => {
       vectors.push({
         id:       batch[idx].id,
         values:   e.embedding,
@@ -77,16 +81,17 @@ async function main() {
       });
     });
   }
-  console.log(`📈 Prepared ${vectors.length} vectors`);
+  console.log(`Total vectors ready: ${vectors.length}`);
 
-  for (let i=0; i<vectors.length; i+=100) {
-    console.log(`⬆️ Upserting ${i}-${i+99}`);
-    await index.upsert(vectors.slice(i,i+100));
+  // Upsert
+  for (let i = 0; i < vectors.length; i += 100) {
+    console.log(`Upserting vectors ${i}-${i+99}`);
+    await index.upsert(vectors.slice(i, i + 100));
   }
   console.log("✅ All vectors upserted!");
 }
 
-main().catch(err=>{
-  console.error("❌ Indexing failed:", err);
+main().catch(err => {
+  console.error("❌ Indexing error:", err);
   process.exit(1);
 });
