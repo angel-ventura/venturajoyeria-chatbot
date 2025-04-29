@@ -17,7 +17,7 @@ const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
 const normalize = s =>
   s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
-// words to ignore completely
+// words to ignore
 const stop = new Set([
   "de","del","la","las","el","los","para","en","con","y","oro","quiero"
 ]);
@@ -74,12 +74,18 @@ fetchProducts()
   })
   .catch(err => console.error("Error loading products:", err));
 
-// collection mappings
+// collection mappings (for “todas” requests)
 const COLLECTIONS = {
-  "nino":  { title: "Cadenas de Oro para Niños", url: "https://venturajoyeria.com/collections/cadenas-de-oro-para-ninos" },
-  // already had these:
-  "pulseras-para-ninos": { title: "Pulseras de Oro para Niños", url: "https://venturajoyeria.com/collections/pulseras-de-oro-para-ninos" },
-  // …add more if you like…
+  "anillodecompromiso":   { title: "Anillos de Compromiso de Oro",   url: "https://venturajoyeria.com/collections/anillos-de-compromiso-de-oro" },
+  "anilloorohombre":      { title: "Anillo Oro Hombre",               url: "https://venturajoyeria.com/collections/anillo-oro-hombre" },
+  "anillooromujer":       { title: "Anillo Oro Mujer",                url: "https://venturajoyeria.com/collections/anillo-oro-mujer" },
+  "aretesdeoro":          { title: "Aretes de Oro",                  url: "https://venturajoyeria.com/collections/aretes-de-oro" },
+  "cadenasdeoro":         { title: "Cadenas de Oro",                 url: "https://venturajoyeria.com/collections/cadenas-de-oro" },
+  "dijesdeoro":           { title: "Dijes de Oro",                   url: "https://venturajoyeria.com/collections/dijes-de-oro" },
+  "gargantillasdeoro":    { title: "Gargantillas de Oro",            url: "https://venturajoyeria.com/collections/gargantillas-de-oro" },
+  "pulserasdeoroparaninos":{ title: "Pulseras de Oro para Niños",    url: "https://venturajoyeria.com/collections/pulseras-de-oro-para-ninos" },
+  "pulserasdeoro":        { title: "Pulseras de Oro",                url: "https://venturajoyeria.com/collections/pulseras-de-oro" },
+  "tobillerasdeoro":      { title: "Tobilleras de Oro",              url: "https://venturajoyeria.com/collections/tobilleras-de-oro" }
 };
 
 // WhatsApp fallback
@@ -107,20 +113,20 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // 2) build search tokens (ignore “si” etc)
+    // 2) tokens
     let tokens = tokenize(last);
     let search = tokens.length
       ? tokens
-      : // fallback to previous actual user query
-      (() => {
-        for (let i = msgs.length-2; i >= 0; i--) {
-          if (msgs[i].role === "user") {
-            const t = tokenize(msgs[i].content);
-            if (t.length) return t;
+      : // fallback to previous real query
+        (() => {
+          for (let i = msgs.length-2; i >= 0; i--) {
+            if (msgs[i].role === "user") {
+              const t = tokenize(msgs[i].content);
+              if (t.length) return t;
+            }
           }
-        }
-        return [];
-      })();
+          return [];
+        })();
 
     const askedAll = /\b(todas?)\b/.test(norm);
 
@@ -145,24 +151,13 @@ app.post("/chat", async (req, res) => {
             : { type:"productList", reply:"Encontré estas opciones:",  productCards: cards }
         );
       }
-
-      // 3b) special “niño(s)” → children chain collection
-      if (search.includes("nino") || search.includes("ninos")) {
-        const col = COLLECTIONS["nino"];
-        return res.json({
-          type: "collection",
-          reply: "Mira nuestra colección de cadenas para niños:",
-          collection: col
-        });
-      }
     }
 
-    // 4) catch-all “todas” → collection link if mapped
+    // 4) “todas” → collection link
     if (askedAll) {
-      // try to map any token to a collection slug
-      for (const t of search) {
-        if (COLLECTIONS[t]) {
-          const col = COLLECTIONS[t];
+      for (const key of Object.keys(COLLECTIONS)) {
+        if (tokens.includes(key)) {
+          const col = COLLECTIONS[key];
           return res.json({
             type: "collection",
             reply: `Visita nuestra colección de ${col.title}:`,
@@ -181,7 +176,6 @@ app.post("/chat", async (req, res) => {
     const rag = await index.query({ vector: vec, topK: 3, includeMetadata: true });
 
     if (!rag.matches.length) {
-      // no context → WhatsApp
       return res.json({
         type: "collection",
         reply: "Lo siento, no encontré eso. Escríbenos por WhatsApp:",
