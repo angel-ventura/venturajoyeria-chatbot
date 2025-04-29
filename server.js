@@ -13,53 +13,11 @@ const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const pinecone = new Pinecone();
 const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
 
-// strip accents + lowercase
+// normalize (strip accents + lowercase)
 const normalize = s =>
   s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
-// words to ignore
-const stop = new Set([
-  "de","del","la","las","el","los","para","en","con","y","oro","quiero"
-]);
-
-// generic commands / affirmatives
-const generic = new Set([
-  "hola","buenas","buenos","dias","días","tardes","noches","hey","hello","hi",
-  "ver","mostrar","ensename","enseñame","enséname",
-  "foto","fotos","imagen","imagenes","imágenes",
-  "tiene","tienen","hay","disponible","disponibles",
-  "si","sí"
-]);
-
-// qualifiers to ignore
-const optional = new Set([
-  "10k","14k","18k","24k","10kt","14kt","18kt","kt","k",
-  "g","gr","gramos","mm","cm","in","inch","pulgada","pulgadas",
-  "largo","ancho","peso","talla"
-]);
-
-// fuzzy match up to 2 edits
-function isClose(a,b){
-  if (Math.abs(a.length-b.length)>2) return false;
-  if (a.length>b.length)[a,b]=[b,a];
-  let i=0, edits=0;
-  while(i<a.length&&edits<=2){
-    if(a[i]===b[i]){ i++; continue; }
-    edits++;
-    if(a.length===b.length) i++;
-    b=b.slice(0,i)+b.slice(i+1);
-  }
-  return edits + (b.length - i) <= 2;
-}
-
-// extract meaningful tokens from a user query
-const tokenize = q =>
-  normalize(q)
-    .split(/\s+/)
-    .filter(w => w && !stop.has(w) && !generic.has(w) && !optional.has(w))
-    .map(w => w.replace(/s$/,""));
-
-// preload product catalog
+// load just title, handle, image, price
 let PRODUCTS = [];
 fetchProducts()
   .then(list => {
@@ -74,21 +32,7 @@ fetchProducts()
   })
   .catch(err => console.error("Error loading products:", err));
 
-// collection mappings (for “todas” requests)
-const COLLECTIONS = {
-  "anillodecompromiso":    { title:"Anillos de Compromiso de Oro",    url:"https://venturajoyeria.com/collections/anillos-de-compromiso-de-oro" },
-  "anilloorohombre":       { title:"Anillo Oro Hombre",              url:"https://venturajoyeria.com/collections/anillo-oro-hombre" },
-  "anillooromujer":        { title:"Anillo Oro Mujer",               url:"https://venturajoyeria.com/collections/anillo-oro-mujer" },
-  "aretesdeoro":           { title:"Aretes de Oro",                  url:"https://venturajoyeria.com/collections/aretes-de-oro" },
-  "cadenasdeoro":          { title:"Cadenas de Oro",                 url:"https://venturajoyeria.com/collections/cadenas-de-oro" },
-  "dijesdeoro":            { title:"Dijes de Oro",                   url:"https://venturajoyeria.com/collections/dijes-de-oro" },
-  "gargantillasdeoro":     { title:"Gargantillas de Oro",            url:"https://venturajoyeria.com/collections/gargantillas-de-oro" },
-  "pulserasdeoroparaninos":{ title:"Pulseras de Oro para Niños",     url:"https://venturajoyeria.com/collections/pulseras-de-oro-para-ninos" },
-  "pulserasdeoro":         { title:"Pulseras de Oro",                url:"https://venturajoyeria.com/collections/pulseras-de-oro" },
-  "tobillerasdeoro":       { title:"Tobilleras de Oro",              url:"https://venturajoyeria.com/collections/tobilleras-de-oro" }
-};
-
-// WhatsApp fallback
+// WhatsApp fallback link
 const waCard = {
   title: "Chatea con nosotros por WhatsApp",
   url:   "https://wa.me/13058902496"
@@ -100,104 +44,86 @@ app.use(express.json());
 
 app.post("/chat", async (req, res) => {
   try {
-    const msgs = req.body.messages || [];
-    const last = msgs.at(-1)?.content  || "";
-    const norm = normalize(last);
+    const messages = req.body.messages || [];
+    const last = messages.at(-1)?.content || "";
+    const userNorm = normalize(last);
 
-    // 1) explicit human request → WhatsApp
-    if (/\b(whatsapp|hablar con|vendedora|humano|representante)\b/.test(norm)) {
-      return res.json({
-        type: "collection",
-        reply: "Claro, te paso nuestro enlace de WhatsApp:",
-        collection: waCard
-      });
-    }
-
-    // 2) build tokens → fallback to previous user if “si” etc
-    let tokens = tokenize(last);
-    let search = tokens.length
-      ? tokens
-      : (() => {
-          for (let i = msgs.length-2; i >= 0; i--) {
-            if (msgs[i].role === "user") {
-              const t = tokenize(msgs[i].content);
-              if (t.length) return t;
-            }
-          }
-          return [];
-        })();
-
-    const askedAll = /\b(todas?)\b/.test(norm);
-
-    // 3) product‐by‐title search
-    if (search.length) {
-      const hits = PRODUCTS.filter(p =>
-        search.every(t =>
-          p.norm.includes(t) ||
-          p.norm.split(/\s+/).some(w => isClose(t, w))
-        )
-      );
-      if (hits.length) {
-        const cards = hits.map(p => ({
-          title: p.title,
-          url:   `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
-          image: p.image,
-          price: p.price
-        }));
-        return res.json(
-          cards.length === 1
-            ? { type:"product",     reply:"Aquí lo encontré:",          productCard: cards[0] }
-            : { type:"productList", reply:"Encontré estas opciones:", productCards: cards }
+    // 1) simple product‐title search → react with cards
+    {
+      // break on words, strip tiny words
+      const tokens = userNorm.split(/\s+/).filter(w => w.length > 2);
+      if (tokens.length) {
+        const hits = PRODUCTS.filter(p =>
+          tokens.every(t => p.norm.includes(t))
         );
-      }
-    }
-
-    // 4) “todas” → collection link
-    if (askedAll) {
-      for (const key of Object.keys(COLLECTIONS)) {
-        if (tokens.includes(key)) {
-          const col = COLLECTIONS[key];
-          return res.json({
-            type: "collection",
-            reply: `Visita nuestra colección de ${col.title}:`,
-            collection: col
-          });
+        if (hits.length) {
+          const cards = hits.map(p => ({
+            title: p.title,
+            url:   `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
+            image: p.image,
+            price: p.price
+          }));
+          // single vs list
+          if (cards.length === 1) {
+            return res.json({
+              type: "product",
+              reply: "Aquí está lo que encontré:",
+              productCard: cards[0]
+            });
+          } else {
+            return res.json({
+              type: "productList",
+              reply: "Encontré estas opciones:",
+              productCards: cards
+            });
+          }
         }
       }
     }
 
-    // 5) RAG fallback (includes financing if in your PDF or pages)
+    // 2) RAG + GPT fallback
+    //  └── build system prompt + contexts
     const emb = await openai.embeddings.create({
       model: "text-embedding-3-small",
       input: [last]
     });
     const vec = emb.data[0].embedding;
-    const rag = await index.query({ vector: vec, topK: 3, includeMetadata: true });
+    const queryRes = await index.query({
+      vector:          vec,
+      topK:            3,
+      includeMetadata: true
+    });
 
-    if (!rag.matches.length) {
-      return res.json({
-        type: "collection",
-        reply: "Lo siento, no encontré eso. Escríbenos por WhatsApp:",
-        collection: waCard
-      });
-    }
-
-    const ctx = rag.matches
-      .map((m,i)=>`Contexto ${i+1}: ${m.metadata.chunkText}`)
+    const contexts = queryRes.matches
+      .map((m,i) => `Contexto ${i+1} (${m.metadata.source}): ${m.metadata.chunkText}`)
       .join("\n\n");
 
-    const enriched = [
-      { role:"system", content:"Usa esta información de la tienda:\n\n" + ctx },
-      ...msgs
+    // 3) assemble chat messages
+    const chatMessages = [
+      {
+        role: "system",
+        content: `
+Eres un asistente de **Ventura Joyería**, experto en joyería de oro 10k/14k.
+Usa la información de la tienda (productos, políticas de envío, financiamiento, RMA, devoluciones, garantías, colecciones) para responder de forma natural y conversacional.
+Cuando el usuario pida “ver fotos” o “mostrar productos”, devuelve siempre tarjetas de producto (imagen, título, precio, enlace).
+Si no puedes responder con certeza, responde sólo con:
+“Lo siento, no encontré eso. Escríbeme por WhatsApp:” y pon el enlace https://wa.me/13058902496
+---
+` + contexts
+      },
+      ...messages
     ];
-    const chat = await openai.chat.completions.create({
+
+    const chatRes = await openai.chat.completions.create({
       model:    "gpt-4o-mini",
-      messages: enriched
+      messages: chatMessages
     });
-    return res.json({ type:"text", reply: chat.choices[0].message.content });
+
+    // send back whatever GPT returns
+    return res.json({ type: "text", reply: chatRes.choices[0].message.content });
 
   } catch (err) {
-    console.error("Chat error:", err);
+    console.error(err);
     return res.status(500).json({
       type: "collection",
       reply: "Ups, algo falló. Escríbenos por WhatsApp:",
