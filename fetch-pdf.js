@@ -1,23 +1,24 @@
 // fetch-pdf.js
-import fs   from "fs";
-import pdf  from "pdf-parse";
+import fs from "fs";
+import pdf from "pdf-parse";
 
 /**
- * Read a PDF file, extract its full text, split into paragraphs.
- * Returns array of { id, text }.
+ * Read a PDF and break into paragraph‐sized chunks.
+ * @param {string} filePath – path to your PDF (e.g. "instructions.pdf")
+ * @param {string}  idPrefix – how to namespace these chunks
  */
-export async function fetchPdfChunks(filePath, idPrefix = "instr") {
-  const data    = fs.readFileSync(filePath);
-  const { text } = await pdf(data);
+export async function fetchPdfChunks(filePath = "instructions.pdf", idPrefix = "instructions") {
+  const dataBuffer = fs.readFileSync(filePath);
+  const { text }    = await pdf(dataBuffer);
 
-  // break on double new-lines, drop very short pieces
+  // split on double‐newlines, drop very short pieces
   const paras = text
     .split(/\n\s*\n+/)
     .map(p => p.trim())
-    .filter(p => p.length > 50);
+    .filter(p => p.length > 30);
 
-  return paras.map((p,i)=>({
+  return paras.map((txt, i) => ({
     id:   `${idPrefix}:${i}`,
-    text: p
+    text: txt
   }));
 }
