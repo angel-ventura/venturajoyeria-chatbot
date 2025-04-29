@@ -76,16 +76,16 @@ fetchProducts()
 
 // collection mappings (for “todas” requests)
 const COLLECTIONS = {
-  "anillodecompromiso":   { title: "Anillos de Compromiso de Oro",   url: "https://venturajoyeria.com/collections/anillos-de-compromiso-de-oro" },
-  "anilloorohombre":      { title: "Anillo Oro Hombre",               url: "https://venturajoyeria.com/collections/anillo-oro-hombre" },
-  "anillooromujer":       { title: "Anillo Oro Mujer",                url: "https://venturajoyeria.com/collections/anillo-oro-mujer" },
-  "aretesdeoro":          { title: "Aretes de Oro",                  url: "https://venturajoyeria.com/collections/aretes-de-oro" },
-  "cadenasdeoro":         { title: "Cadenas de Oro",                 url: "https://venturajoyeria.com/collections/cadenas-de-oro" },
-  "dijesdeoro":           { title: "Dijes de Oro",                   url: "https://venturajoyeria.com/collections/dijes-de-oro" },
-  "gargantillasdeoro":    { title: "Gargantillas de Oro",            url: "https://venturajoyeria.com/collections/gargantillas-de-oro" },
-  "pulserasdeoroparaninos":{ title: "Pulseras de Oro para Niños",    url: "https://venturajoyeria.com/collections/pulseras-de-oro-para-ninos" },
-  "pulserasdeoro":        { title: "Pulseras de Oro",                url: "https://venturajoyeria.com/collections/pulseras-de-oro" },
-  "tobillerasdeoro":      { title: "Tobilleras de Oro",              url: "https://venturajoyeria.com/collections/tobilleras-de-oro" }
+  "anillodecompromiso":    { title:"Anillos de Compromiso de Oro",    url:"https://venturajoyeria.com/collections/anillos-de-compromiso-de-oro" },
+  "anilloorohombre":       { title:"Anillo Oro Hombre",              url:"https://venturajoyeria.com/collections/anillo-oro-hombre" },
+  "anillooromujer":        { title:"Anillo Oro Mujer",               url:"https://venturajoyeria.com/collections/anillo-oro-mujer" },
+  "aretesdeoro":           { title:"Aretes de Oro",                  url:"https://venturajoyeria.com/collections/aretes-de-oro" },
+  "cadenasdeoro":          { title:"Cadenas de Oro",                 url:"https://venturajoyeria.com/collections/cadenas-de-oro" },
+  "dijesdeoro":            { title:"Dijes de Oro",                   url:"https://venturajoyeria.com/collections/dijes-de-oro" },
+  "gargantillasdeoro":     { title:"Gargantillas de Oro",            url:"https://venturajoyeria.com/collections/gargantillas-de-oro" },
+  "pulserasdeoroparaninos":{ title:"Pulseras de Oro para Niños",     url:"https://venturajoyeria.com/collections/pulseras-de-oro-para-ninos" },
+  "pulserasdeoro":         { title:"Pulseras de Oro",                url:"https://venturajoyeria.com/collections/pulseras-de-oro" },
+  "tobillerasdeoro":       { title:"Tobilleras de Oro",              url:"https://venturajoyeria.com/collections/tobilleras-de-oro" }
 };
 
 // WhatsApp fallback
@@ -113,12 +113,11 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // 2) tokens
+    // 2) build tokens → fallback to previous user if “si” etc
     let tokens = tokenize(last);
     let search = tokens.length
       ? tokens
-      : // fallback to previous real query
-        (() => {
+      : (() => {
           for (let i = msgs.length-2; i >= 0; i--) {
             if (msgs[i].role === "user") {
               const t = tokenize(msgs[i].content);
@@ -147,8 +146,8 @@ app.post("/chat", async (req, res) => {
         }));
         return res.json(
           cards.length === 1
-            ? { type:"product",     reply:"Aquí lo encontré:",           productCard: cards[0] }
-            : { type:"productList", reply:"Encontré estas opciones:",  productCards: cards }
+            ? { type:"product",     reply:"Aquí lo encontré:",          productCard: cards[0] }
+            : { type:"productList", reply:"Encontré estas opciones:", productCards: cards }
         );
       }
     }
@@ -167,7 +166,7 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    // 5) RAG fallback
+    // 5) RAG fallback (includes financing if in your PDF or pages)
     const emb = await openai.embeddings.create({
       model: "text-embedding-3-small",
       input: [last]
