@@ -1,79 +1,101 @@
-// ==================== index-docs.js ====================
-require('dotenv').config();
-const { fetchShopifyData } = require('./fetch-shopify');
-const { fetchPublicPages } = require('./fetch-public-pages');
-const { chunkText } = require('./chunker');
-const { PineconeClient } = require('@pinecone-database/pinecone');
-const OpenAI = require('openai');
+// index-docs.js
+import dotenv from "dotenv";
+dotenv.config();
 
-(async () => {
-  // initialize OpenAI & Pinecone clients
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const pinecone = new PineconeClient();
-  await pinecone.init({
-    apiKey: process.env.PINECONE_API_KEY,
-    environment: process.env.PINECONE_ENVIRONMENT,
-  });
-  const index = pinecone.Index(process.env.PINECONE_INDEX);
+import OpenAI from "openai";
+import pkg from "@pinecone-database/pinecone";
 
-  // fetch your Shopify + public docs
-  const { products, pages, policies, priceRules } = await fetchShopifyData();
-  const publicUrls = [process.env.SITE_URL, `${process.env.SITE_URL}/pages/sobre-nosotros`];
-  const publicPages = await fetchPublicPages(publicUrls);
+import {
+  fetchProducts,
+  fetchPages,
+  fetchShippingPolicy,
+  fetchDiscountCodes
+} from "./fetch-shopify.js";
+import { fetchPageText } from "./fetch-public-pages.js";
+import { chunkText }     from "./chunker.js";
 
-  // prepare metadata + text for embedding
-  const docs = [
-    ...products.map(p => ({
-      id: `product-${p.id}`,
-      text: p.body_html || p.title,
-      metadata: { source: 'shopify-product', handle: p.handle },
-    })),
-    ...pages.map(p => ({
-      id: `page-${p.id}`,
-      text: p.body_html || p.title,
-      metadata: { source: 'shopify-page', handle: p.handle },
-    })),
-    ...policies.map(p => ({
-      id: `policy-${p.id}`,
-      text: p.body_html || p.title,
-      metadata: { source: 'shopify-policy', handle: p.handle },
-    })),
-    ...priceRules.map(r => ({
-      id: `discount-${r.id}`,
-      text: r.title || r.value,
-      metadata: { source: 'shopify-discount', rule: r.id },
-    })),
-    ...publicPages.map(pp => ({
-      id: `public-${Buffer.from(pp.url).toString('base64')}`,
-      text: pp.content,
-      metadata: { source: 'public', url: pp.url },
-    })),
+const { Pinecone } = pkg;
+const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const pinecone = new Pinecone();
+const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
+
+async function main() {
+  console.log("Fetching Shopify products…");
+  const products = await fetchProducts();
+  console.log(`→ products: ${products.length}`);
+
+  console.log("Fetching Shopify pages…");
+  const pages = await fetchPages();
+  console.log(`→ pages: ${pages.length}`);
+
+  console.log("Fetching shipping policy…");
+  const shipping = await fetchShippingPolicy();
+  console.log(`→ shipping policies: ${shipping.length}`);
+
+  console.log("Fetching discount codes…");
+  const discounts = await fetchDiscountCodes();
+  console.log(`→ discount codes: ${discounts.length}`);
+
+  console.log("Fetching public pages…");
+  const publicUrls = [
+    "https://venturajoyeria.com/",
+    "https://venturajoyeria.com/pages/sobre-nosotros",
+    "https://venturajoyeria.com/policies/shipping-policy",
+    "https://venturajoyeria.com/policies/refund-policy"
   ];
+  const publics = await Promise.all(publicUrls.map(fetchPageText));
+  console.log(`→ public pages: ${publics.length}`);
 
-  // batch upsert into Pinecone
-  const batchSize = 100;
-  for (let i = 0; i < docs.length; i += batchSize) {
-    const batch = docs.slice(i, i + batchSize);
-    const vectors = [];
+  // Combine
+  const allDocs = [
+    ...products,
+    ...pages,
+    ...shipping,
+    ...discounts,
+    ...publics.map(d => ({ id: `public:${d.url}`, text: d.text }))
+  ];
+  console.log(`Total raw docs: ${allDocs.length}`);
 
-    for (const doc of batch) {
-      const chunks = chunkText(doc.text, 800, 100);
-      for (let idx = 0; idx < chunks.length; idx++) {
-        const { embedding } = await openai.embeddings.create({
-          model: 'text-embedding-ada-002',
-          input: chunks[idx],
-        }).then(r => r.data[0]);
-        vectors.push({
-          id: `${doc.id}-chunk-${idx}`,
-          values: embedding,
-          metadata: { ...doc.metadata, chunkIndex: idx },
-        });
-      }
-    }
+  // Chunk
+  const chunks = allDocs.flatMap(doc => {
+    const meta = doc.metadata || {};
+    return chunkText(doc.text).map((text, i) => ({
+      id:       `${doc.id}#${i}`,
+      text,
+      metadata: { source: doc.id, chunkText: text, ...meta }
+    }));
+  });
+  console.log(`Total chunks: ${chunks.length}`);
 
-    await index.upsert({ upsertRequest: { vectors } });
-    console.log(`Upserted batch ${i/batchSize + 1}/${Math.ceil(docs.length/batchSize)}`);
+  // Embed
+  const vectors = [];
+  for (let i = 0; i < chunks.length; i += 100) {
+    const batch = chunks.slice(i, i + 100);
+    console.log(`Embedding batch ${i/100+1}/${Math.ceil(chunks.length/100)}`);
+    const resp = await openai.embeddings.create({
+      model: "text-embedding-3-small",
+      input: batch.map(c => c.text)
+    });
+    resp.data.forEach((e, idx) => {
+      vectors.push({
+        id:       batch[idx].id,
+        values:   e.embedding,
+        metadata: batch[idx].metadata
+      });
+    });
   }
+  console.log(`Total vectors ready: ${vectors.length}`);
 
-  console.log('Indexing complete.');
-})();
+  // Upsert
+  for (let i = 0; i < vectors.length; i += 100) {
+    const slice = vectors.slice(i, i + 100);
+    console.log(`Upserting vectors ${i}-${i + slice.length - 1}…`);
+    await index.upsert(slice);
+  }
+  console.log("✅ All vectors upserted!");
+}
+
+main().catch(err => {
+  console.error("❌ Indexing error:", err);
+  process.exit(1);
+});
