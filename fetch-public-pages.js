@@ -1,31 +1,20 @@
-// fetch-public-pages.js
-import fetch from "node-fetch";
-import { load } from "cheerio";
+// ==================== fetch-public-pages.js ====================
+const axiosPub = require('axios');
+const cheerio = require('cheerio');
 
-/**
- * Download the given URL, parse HTML, extract main content or <body>,
- * and return an object with the URL and its cleaned text.
- */
-export async function fetchPageText(url) {
-  console.log("Fetching", url);
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText} fetching ${url}`);
+async function fetchPublicPages(urls) {
+  const pages = [];
+  for (const url of urls) {
+    try {
+      const { data: html } = await axiosPub.get(url);
+      const $ = cheerio.load(html);
+      const text = $('main, article').text().trim() || $('body').text().trim();
+      pages.push({ url, content: text });
+    } catch (err) {
+      console.error(`Error fetching ${url}:`, err.message);
+    }
   }
-  const html = await res.text();
-  const $ = load(html);
-
-  // Try to grab the main Shopify content container (<main>, #MainContent, or .page-content),
-  // otherwise fall back to the entire body
-  const main = $("#MainContent, .page-content, main").first();
-  const container = main.length ? main : $("body");
-
-  // Extract and clean text
-  const text = container
-    .text()
-    .trim()
-    .replace(/\s+/g, " ");
-
-  console.log(`→ ${url} : ${text.length} chars`);
-  return { url, text };
+  return pages;
 }
+
+module.exports = { fetchPublicPages };
