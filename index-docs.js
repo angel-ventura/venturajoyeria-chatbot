@@ -8,14 +8,11 @@ import { fetchProducts, fetchPages } from "./fetch-shopify.js";
 import { fetchPageText } from "./fetch-public-pages.js";
 import { chunkText } from "./chunker.js";
 
-const { Pinecone } = pkg;
-
-const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const pinecone = new Pinecone();
-const index    = pinecone.Index(process.env.PINECONE_INDEX);
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const pinecone = new pkg.Pinecone();
+const index = pinecone.Index(process.env.PINECONE_INDEX);
 
 async function main() {
-  // FETCH
   console.log("Fetching Shopify products…");
   const products = await fetchProducts();
   console.log("→ products:", products.length);
@@ -25,78 +22,89 @@ async function main() {
   console.log("→ pages:", pages.length);
 
   console.log("Fetching public pages…");
-  const publics = await Promise.all([
+  const urls = [
     "https://venturajoyeria.com/",
     "https://venturajoyeria.com/pages/sobre-nosotros",
     "https://venturajoyeria.com/policies/shipping-policy",
     "https://venturajoyeria.com/policies/refund-policy"
-  ].map(async url => {
+  ];
+
+  const publics = [];
+  for (const url of urls) {
     const { text } = await fetchPageText(url);
-    return { id: `public:${url}`, text };
-  }));
+    console.log(`→ ${url} : ${text.length} chars`);
+    publics.push({ id: `public:${url}`, text });
+  }
   console.log("→ public pages:", publics.length);
 
-  const allDocs = [...products, ...pages, ...publics];
+  const allDocs = [
+    ...products.map(p => ({ ...p, namespace: "products" })),
+    ...pages.map(p => ({ ...p, namespace: "site-info" })),
+    ...publics.map(p => ({ ...p, namespace: "site-info" }))
+  ];
+
   console.log("Total raw documents:", allDocs.length);
 
-  // CHUNK
   const chunks = allDocs.flatMap(doc =>
     chunkText(doc.text).map((piece, i) => ({
-      id:       `${doc.id}#${i}`,
-      text:     piece,
-      metadata: { source: doc.id, chunkText: piece }
+      id: `${doc.id}#${i}`,
+      values: piece,
+      metadata: {
+        source: doc.id,
+        chunkText: piece
+      },
+      namespace: doc.namespace
     }))
   );
+
   console.log("Total chunks:", chunks.length);
 
-  // EMBED
+  console.log("Embedding chunks...");
   const vectors = [];
   for (let i = 0; i < chunks.length; i += 100) {
     const batch = chunks.slice(i, i + 100);
-    console.log(`Embedding batch ${i/100 + 1}/${Math.ceil(chunks.length/100)}`);
-    const resp = await openai.embeddings.create({
+    console.log(`Embedding batch ${i / 100 + 1}/${Math.ceil(chunks.length / 100)}`);
+    const response = await openai.embeddings.create({
       model: "text-embedding-3-small",
-      input: batch.map(c => c.text)
+      input: batch.map(c => c.values)
     });
-    resp.data.forEach((e, idx) => {
+
+    response.data.forEach((embed, j) => {
       vectors.push({
-        id:       batch[idx].id,
-        values:   e.embedding,
-        metadata: batch[idx].metadata
+        id: batch[j].id,
+        values: embed.embedding,
+        metadata: batch[j].metadata,
+        namespace: batch[j].namespace
       });
     });
   }
+
   console.log("Total vectors to upsert:", vectors.length);
 
-  // DELETE old product vectors only
+  // Delete only old products (keep site-info)
   console.log("🧹 Deleting old product vectors...");
-  await index.deleteMany({
-    namespace: "products",
-    deleteAll: true,
-    ids: [] // required to avoid error in some Pinecone deployments
-  });
+  await index._deleteAll({ namespace: "products" });
 
-  // UPSERT
-  const productVectors = vectors.filter(v => v.metadata.source.startsWith("product:"));
-  const siteVectors    = vectors.filter(v => v.metadata.source.startsWith("public:") || v.metadata.source.startsWith("page:"));
+  // Upsert all
+  console.log("⬆️ Upserting to Pinecone...");
+  const grouped = vectors.reduce((acc, v) => {
+    acc[v.namespace] = acc[v.namespace] || [];
+    acc[v.namespace].push({
+      id: v.id,
+      values: v.values,
+      metadata: v.metadata
+    });
+    return acc;
+  }, {});
 
-  console.log("📦 Upserting product vectors...");
-  for (let i = 0; i < productVectors.length; i += 100) {
+  for (const ns of Object.keys(grouped)) {
     await index.upsert({
-      namespace: "products",
-      vectors: productVectors.slice(i, i + 100)
+      namespace: ns,
+      vectors: grouped[ns]
     });
   }
 
-  console.log("🌐 Upserting site-info vectors...");
-  for (let i = 0; i < siteVectors.length; i += 100) {
-    await index.upsert({
-      namespace: "site-info",
-      vectors: siteVectors.slice(i, i + 100)
-    });
-  }
-
-  console.log("✅ All vectors upserted!");
+  console.log("✅ Indexing complete!");
 }
 
 main().catch(err => {
