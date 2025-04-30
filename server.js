@@ -14,32 +14,64 @@ const pinecone = new Pinecone();
 const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
 
 /* ─────────── helpers ─────────── */
+
+// strip out common Markdown (bold, italic, headings, lists, links, code, etc.)
+function stripMarkdown(text) {
+  return text
+    // remove fenced code blocks
+    .replace(/```[\s\S]*?```/g, '')
+    // headings
+    .replace(/^#{1,6}\s*(.*)/gm, '$1')
+    // horizontal rules
+    .replace(/^(?:-{3,}|\*{3,}|_{3,})$/gm, '')
+    // images
+    .replace(/!\[.*?\]\(.*?\)/g, '')
+    // links
+    .replace(/\[([^\]]+)\]\(.*?\)/g, '$1')
+    // bold, italic, underline, strikethrough
+    .replace(/\*\*(.*?)\*\*/g, '$1')   // **bold**
+    .replace(/__(.*?)__/g, '$1')       // __underline__
+    .replace(/\*(.*?)\*/g, '$1')       // *italic*
+    .replace(/_(.*?)_/g, '$1')         // _italic_
+    .replace(/~~(.*?)~~/g, '$1')       // ~~strikethrough~~
+    // inline code
+    .replace(/`([^`]+)`/g, '$1')
+    // blockquotes
+    .replace(/^>\s*(.*)/gm, '$1')
+    // unordered lists
+    .replace(/^\s*[-*+]\s+(.*)/gm, '$1')
+    // ordered lists
+    .replace(/^\s*\d+\.\s+(.*)/gm, '$1')
+    // trim stray whitespace
+    .trim();
+}
+
+// normalize string: remove accents, to lowercase
 const normalize = s =>
   s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
+// stop words (Spanish)
 const stop = new Set([
   "de","del","la","las","el","los","para","en","con","y","oro","quiero"
 ]);
 
+// generic filler words
 const generic = new Set([
-  // greetings / fillers
   "hola","buenas","buenos","dias","días","tardes","noches",
   "hey","hello","hi","??","???",
-  // generic actions
   "ver","mostrar","ensename","enseñame","enséname",
-  // image requests
   "foto","fotos","imagen","imagenes","imágenes",
-  // availability
   "tiene","tienen","hay","disponible","disponibles"
 ]);
 
+// optional qualifiers
 const optional = new Set([
   "10k","14k","18k","24k","10kt","14kt","18kt","kt","k",
   "g","gr","gramos","mm","cm","in","inch","pulgada","pulgadas",
   "largo","ancho","peso","talla"
 ]);
 
-/* Levenshtein ≤2 */
+// Levenshtein ≤2 fuzzy match
 function isClose(a,b){
   if (Math.abs(a.length-b.length) > 2) return false;
   if (a.length > b.length) [a,b] = [b,a];
@@ -53,6 +85,7 @@ function isClose(a,b){
   return edits + (b.length - i) <= 2;
 }
 
+// tokenize user query: normalize, split, filter stop/generic/optional
 const tokenize = q =>
   normalize(q)
     .split(/\s+/)
@@ -102,7 +135,7 @@ app.post("/chat", async (req, res) => {
     const last = msgs.at(-1)?.content ?? "";
     const norm = normalize(last);
 
-    // 0) explicit human/WhatsApp request
+    // 0) human/WhatsApp fallback
     if (/\b(whatsapp|hablar con|vendedora|humano|asesor|representante)\b/.test(norm)) {
       return res.json({
         type:       "collection",
@@ -115,7 +148,7 @@ app.post("/chat", async (req, res) => {
     let tokens = tokenize(last);
     let search = tokens.filter(t => !generic.has(t) && !optional.has(t));
 
-    // if no tokens, walk back to last valid user query
+    // if no tokens, backtrack to last user message
     if (search.length === 0) {
       for (let i = msgs.length - 2; i >= 0; i--) {
         if (msgs[i].role === "user") {
@@ -186,9 +219,13 @@ app.post("/chat", async (req, res) => {
       messages: enriched
     });
 
+    // strip markdown before replying
+    const raw = chat.choices[0].message.content;
+    const clean = stripMarkdown(raw);
+
     return res.json({
       type:       "text+collection",
-      reply:      chat.choices[0].message.content,
+      reply:      clean,
       collection: waCard
     });
 
@@ -204,4 +241,3 @@ app.post("/chat", async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`🚀 Chat server listening on ${PORT}`));
-
