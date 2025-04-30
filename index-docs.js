@@ -4,23 +4,21 @@ dotenv.config();
 
 import OpenAI from "openai";
 import pkg from "@pinecone-database/pinecone";
-
 import { fetchProducts, fetchPages } from "./fetch-shopify.js";
-import { fetchPageText }             from "./fetch-public-pages.js";
-import { chunkText }                 from "./chunker.js";
+import { fetchPageText } from "./fetch-public-pages.js";
+import { chunkText } from "./chunker.js";
 
 const { Pinecone } = pkg;
 
-const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const pinecone = new Pinecone();
-const index    = pinecone.Index(process.env.PINECONE_INDEX);
+const index = pinecone.Index(process.env.PINECONE_INDEX);
 
-// helper to embed and format
 async function embedChunks(docs, namespace) {
   const chunks = docs.flatMap(doc =>
     chunkText(doc.text).map((piece, i) => ({
-      id:       `${doc.id}#${i}`,
-      values:   [],
+      id: `${doc.id}#${i}`,
+      values: [],
       metadata: { chunkText: piece, source: doc.id }
     }))
   );
@@ -51,15 +49,15 @@ async function main() {
   console.log("→ products:", products.length);
 
   const productDocs = products.map(p => ({
-    id:   `product:${p.id}`,
+    id: `product:${p.id}`,
     text: `${p.metadata.title}\n${p.metadata.price}\n${p.metadata.description}`
   }));
 
-  // 🧹 Clear old product data first
-  await index._delete({ namespace: "products", deleteAll: true });
+  // 🧹 Clear old product vectors
+  await index.deleteMany({ deleteAll: true, namespace: "products" });
   await embedChunks(productDocs, "products");
 
-  // 🟩 Sync site content
+  // 🟩 Sync public site pages
   console.log("Fetching public site pages…");
   const urls = [
     "https://venturajoyeria.com/",
