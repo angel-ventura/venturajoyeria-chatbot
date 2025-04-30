@@ -1,6 +1,10 @@
+name: 📅 Daily Pinecone Re-index
+
 on:
+  # every day at 2:00 UTC
   schedule:
     - cron: '0 2 * * *'
+  # also allow manual trigger
   workflow_dispatch:
 
 jobs:
@@ -17,7 +21,7 @@ jobs:
           node-version: '18'
 
       - name: Install dependencies
-        run: npm install          # ← swap out `npm ci` for `npm install`
+        run: npm ci
 
       - name: Run Pinecone indexer
         env:
