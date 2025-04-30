@@ -1,1 +1,0 @@
-PLACEHOLDER: index-docs.js content will be re-injected now.
