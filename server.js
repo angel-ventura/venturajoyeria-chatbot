@@ -1,243 +1,79 @@
-// server.js
-import dotenv from "dotenv";
-dotenv.config();
+// ==================== server.js ====================
+require('dotenv').config();
+const express = require('express');
+const bodyParser = require('body-parser');
+const session = require('express-session');
+const { Configuration, OpenAIApi } = require('openai');
+const pinecone = require('@pinecone-database/pinecone');
+const { fetchShopifyData } = require('./fetch-shopify');
 
-import express from "express";
-import cors    from "cors";
-import OpenAI  from "openai";
-import pkg     from "@pinecone-database/pinecone";
-import { fetchProducts } from "./fetch-shopify.js";
-
-const { Pinecone } = pkg;
-const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const pinecone = new Pinecone();
-const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
-
-/* ─────────── helpers ─────────── */
-
-// strip out common Markdown (bold, italic, headings, lists, links, code, etc.)
-function stripMarkdown(text) {
-  return text
-    // remove fenced code blocks
-    .replace(/```[\s\S]*?```/g, '')
-    // headings
-    .replace(/^#{1,6}\s*(.*)/gm, '$1')
-    // horizontal rules
-    .replace(/^(?:-{3,}|\*{3,}|_{3,})$/gm, '')
-    // images
-    .replace(/!\[.*?\]\(.*?\)/g, '')
-    // links
-    .replace(/\[([^\]]+)\]\(.*?\)/g, '$1')
-    // bold, italic, underline, strikethrough
-    .replace(/\*\*(.*?)\*\*/g, '$1')   // **bold**
-    .replace(/__(.*?)__/g, '$1')       // __underline__
-    .replace(/\*(.*?)\*/g, '$1')       // *italic*
-    .replace(/_(.*?)_/g, '$1')         // _italic_
-    .replace(/~~(.*?)~~/g, '$1')       // ~~strikethrough~~
-    // inline code
-    .replace(/`([^`]+)`/g, '$1')
-    // blockquotes
-    .replace(/^>\s*(.*)/gm, '$1')
-    // unordered lists
-    .replace(/^\s*[-*+]\s+(.*)/gm, '$1')
-    // ordered lists
-    .replace(/^\s*\d+\.\s+(.*)/gm, '$1')
-    // trim stray whitespace
-    .trim();
-}
-
-// normalize string: remove accents, to lowercase
-const normalize = s =>
-  s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-
-// stop words (Spanish)
-const stop = new Set([
-  "de","del","la","las","el","los","para","en","con","y","oro","quiero"
-]);
-
-// generic filler words
-const generic = new Set([
-  "hola","buenas","buenos","dias","días","tardes","noches",
-  "hey","hello","hi","??","???",
-  "ver","mostrar","ensename","enseñame","enséname",
-  "foto","fotos","imagen","imagenes","imágenes",
-  "tiene","tienen","hay","disponible","disponibles"
-]);
-
-// optional qualifiers
-const optional = new Set([
-  "10k","14k","18k","24k","10kt","14kt","18kt","kt","k",
-  "g","gr","gramos","mm","cm","in","inch","pulgada","pulgadas",
-  "largo","ancho","peso","talla"
-]);
-
-// Levenshtein ≤2 fuzzy match
-function isClose(a,b){
-  if (Math.abs(a.length-b.length) > 2) return false;
-  if (a.length > b.length) [a,b] = [b,a];
-  let i = 0, edits = 0;
-  while (i < a.length && edits <= 2) {
-    if (a[i] === b[i]) { i++; continue; }
-    edits++;
-    if (a.length === b.length) i++;
-    b = b.slice(0,i) + b.slice(i+1);
-  }
-  return edits + (b.length - i) <= 2;
-}
-
-// tokenize user query: normalize, split, filter stop/generic/optional
-const tokenize = q =>
-  normalize(q)
-    .split(/\s+/)
-    .filter(w => w && !stop.has(w))
-    .map(w => w.replace(/s$/,""));
-
-/* ───────── preload products ───────── */
-let PRODUCTS = [];
-fetchProducts().then(list => {
-  PRODUCTS = list.map(p => ({
-    title:  p.metadata.title,
-    handle: p.metadata.handle,
-    image:  p.metadata.image,
-    price:  p.metadata.price,
-    norm:   normalize(p.metadata.title)
-  }));
-  console.log(`✅ Loaded ${PRODUCTS.length} published products`);
-}).catch(console.error);
-
-/* ───────── collections ───────── */
-const COLLS = [
-  ["Cadenas de Oro","cadenas-de-oro"],
-  ["Gargantillas de Oro","gargantillas-de-oro"],
-  ["Anillos de Compromiso de Oro","anillos-de-compromiso-de-oro"],
-  ["Anillo Oro Hombre","anillo-oro-hombre"],
-  ["Anillo Oro Mujer","anillo-oro-mujer"],
-  ["Aretes de Oro","aretes-de-oro"],
-  ["Dijes de Oro","dijes-de-oro"],
-  ["Pulseras de Oro para Niños","pulseras-de-oro-para-ninos"],
-  ["Pulseras de Oro","pulseras-de-oro"],
-  ["Tobilleras de Oro","tobilleras-de-oro"]
-];
-
-/* ───────── express setup ───────── */
 const app = express();
-app.use(cors({ origin: "https://venturajoyeria.com" }));
-app.use(express.json());
+app.use(bodyParser.json());
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'keyboard cat',
+  resave: false,
+  saveUninitialized: true,
+  cookie: { maxAge: 86400000 }
+}));
 
-const waCard = {
-  title: "WhatsApp Ventura Jewelry",
-  url:   "https://wa.me/13058902496"
-};
+const openai = new OpenAIApi(new Configuration({ apiKey: process.env.OPENAI_API_KEY }));
+const pineconeClient = new pinecone.PineconeClient();
+(async () => {
+  await pineconeClient.init({ apiKey: process.env.PINECONE_API_KEY, environment: process.env.PINECONE_ENV });
+  app.locals.index = pineconeClient.Index(process.env.PINECONE_INDEX);
+})();
 
-app.post("/chat", async (req, res) => {
-  try {
-    const msgs = req.body.messages ?? [];
-    const last = msgs.at(-1)?.content ?? "";
-    const norm = normalize(last);
+// simple in-memory cache for search
+const cache = new Map();
 
-    // 0) human/WhatsApp fallback
-    if (/\b(whatsapp|hablar con|vendedora|humano|asesor|representante)\b/.test(norm)) {
-      return res.json({
-        type:       "collection",
-        reply:      "Claro, aquí tienes un enlace directo a nuestro equipo:",
-        collection: waCard
-      });
-    }
+app.post('/chat', async (req, res) => {
+  const { sessionId, message } = req.body;
+  if (!sessionId || !message) return res.status(400).json({ error: 'sessionId and message are required' });
 
-    // 1) build search tokens
-    let tokens = tokenize(last);
-    let search = tokens.filter(t => !generic.has(t) && !optional.has(t));
-
-    // if no tokens, backtrack to last user message
-    if (search.length === 0) {
-      for (let i = msgs.length - 2; i >= 0; i--) {
-        if (msgs[i].role === "user") {
-          const prev = tokenize(msgs[i].content)
-            .filter(t => !generic.has(t) && !optional.has(t));
-          if (prev.length) { search = prev; break; }
-        }
-      }
-    }
-
-    const askAll = /\b(todas?)\b/.test(norm);
-
-    // 2) product cards
-    if (search.length) {
-      const hits = PRODUCTS.filter(p =>
-        search.every(t =>
-          p.norm.includes(t) ||
-          p.norm.split(/\s+/).some(w => isClose(t, w))
-        )
-      );
-      if (hits.length) {
-        const cards = hits.map(p => ({
-          title: p.title,
-          url:   `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
-          image: p.image,
-          price: p.price
-        }));
-        return res.json(
-          hits.length === 1
-            ? { type: "product",     reply: "Aquí lo encontré:",        productCard: cards[0] }
-            : { type: "productList", reply: "Encontré estas opciones:", productCards: cards }
-        );
-      }
-    }
-
-    // 3) collection link
-    if (askAll) {
-      const col = COLLS.find(([name]) =>
-        tokens.some(t => normalize(name).includes(t))
-      );
-      if (col) {
-        const [label, handle] = col;
-        return res.json({
-          type:       "collection",
-          reply:      `Visita nuestra colección de ${label}:`,
-          collection: { title: label, url: `https://venturajoyeria.com/collections/${handle}` }
-        });
-      }
-    }
-
-    // 4) RAG fallback → GPT answer + WhatsApp card
-    const emb = await openai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: [last]
-    });
-    const vec = emb.data[0].embedding;
-    const rag = await index.query({ vector: vec, topK: 3, includeMetadata: true });
-    const ctx = rag.matches
-      .map((m, i) => `Contexto ${i+1}: ${m.metadata.chunkText}`)
-      .join("\n\n");
-
-    const enriched = [
-      { role: "system", content: "Usa esta información de la tienda:\n\n" + ctx },
-      ...msgs
+  if (!req.session.histories) req.session.histories = {};
+  if (!req.session.histories[sessionId]) {
+    req.session.histories[sessionId] = [
+      { role: 'system', content: process.env.SYSTEM_PROMPT || 'You are a friendly assistant for Ventura Jewelry.' }
     ];
-    const chat = await openai.chat.completions.create({
-      model:    "gpt-4o-mini",
-      messages: enriched
-    });
-
-    // strip markdown before replying
-    const raw = chat.choices[0].message.content;
-    const clean = stripMarkdown(raw);
-
-    return res.json({
-      type:       "text+collection",
-      reply:      clean,
-      collection: waCard
-    });
-
-  } catch (err) {
-    console.error("Chat error:", err);
-    return res.status(500).json({
-      type:       "collection",
-      reply:      "Lo siento, ocurrió un error. Contáctanos directamente:",
-      collection: waCard
-    });
   }
+  const history = req.session.histories[sessionId];
+  history.push({ role: 'user', content: message });
+
+  // quick product lookup
+  if (!app.locals.products) {
+    const { products } = await fetchShopifyData();
+    app.locals.products = products;
+  }
+  const found = app.locals.products.find(p => message.toLowerCase().includes(p.title.toLowerCase()));
+  let reply;
+  if (found) {
+    reply = `¡Claro! Encontré **${found.title}** por $${found.variants[0].price}. Aquí: ${process.env.STORE_URL}/products/${found.handle}`;
+  } else {
+    // vector query
+    let contextChunks;
+    if (cache.has(message)) {
+      contextChunks = cache.get(message);
+    } else {
+      const emb = await openai.createEmbedding({ model: 'text-embedding-ada-002', input: message });
+      const query = await app.locals.index.query({ queryRequest: { vector: emb.data.data[0].embedding, topK: 3, includeMetadata: true } });
+      contextChunks = query.matches.map(m => m.metadata);
+      cache.set(message, contextChunks);
+      setTimeout(() => cache.delete(message), 60000);
+    }
+    const systemContext = `Contexto relevante:\n${contextChunks.map(c => c.chunkText || '').join('\n\n')}`;
+    const msgs = [...history, { role: 'system', content: systemContext }];
+    const completion = await openai.createChatCompletion({
+      model: process.env.CHAT_MODEL || 'gpt-3.5-turbo',
+      messages: msgs,
+      temperature: 0.7,
+      top_p: 0.9
+    });
+    reply = completion.data.choices[0].message.content.trim();
+  }
+
+  history.push({ role: 'assistant', content: reply });
+  res.json({ reply });
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`🚀 Chat server listening on ${PORT}`));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
