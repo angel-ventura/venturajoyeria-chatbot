@@ -1,31 +1,40 @@
-// chunker.js
+// ==================== chunker.js ====================
+const { encode } = require('gpt-3-encoder');
+
 /**
- * Split a long text into chunks up to maxChars, preferring sentence boundaries.
- * @param {string} text - The text to split
- * @param {number} maxChars - Approximate maximum chars per chunk
- * @returns {string[]} Array of text chunks
+ * Splits text into chunks of approx. maxTokens size with overlap.
+ * @param {string} text 
+ * @param {number} maxTokens 
+ * @param {number} overlapTokens 
+ * @returns {string[]}
  */
-export function chunkText(text, maxChars = 1000) {
+function chunkText(text, maxTokens = 500, overlapTokens = 50) {
+  const sentences = text.match(/[^\.\!?]+[\.\!?]+/g) || [text];
   const chunks = [];
-  let start = 0;
-  const len = text.length;
-  while (start < len) {
-    let end = Math.min(start + maxChars, len);
-    // Try to split on a period
-    let split = text.lastIndexOf('.', end);
-    if (split <= start) {
-      // Try newline
-      split = text.lastIndexOf('\n', end);
+  let chunk = [];
+  let tokenCount = 0;
+
+  for (const sentence of sentences) {
+    const tokens = encode(sentence);
+    if (tokenCount + tokens.length > maxTokens && chunk.length) {
+      chunks.push(chunk.join(' '));
+      // carry over overlap
+      const overlapSentences = [];
+      let overlapTokensCount = 0;
+      while (chunk.length && overlapTokensCount < overlapTokens) {
+        const s = chunk.pop();
+        const t = encode(s).length;
+        overlapTokensCount += t;
+        overlapSentences.unshift(s);
+      }
+      chunk = overlapSentences;
+      tokenCount = encode(chunk.join(' ')).length;
     }
-    if (split <= start) {
-      // fallback to max length
-      split = end;
-    }
-    // include the split character if it's a period
-    const sliceEnd = split + (text[split] === '.' ? 1 : 0);
-    const chunk = text.slice(start, sliceEnd).trim();
-    if (chunk) chunks.push(chunk);
-    start = sliceEnd;
+    chunk.push(sentence);
+    tokenCount += tokens.length;
   }
+  if (chunk.length) chunks.push(chunk.join(' '));
   return chunks;
 }
+
+module.exports = { chunkText };
