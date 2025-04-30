@@ -10,85 +10,79 @@ import { fetchPageText } from "./fetch-public-pages.js";
 import { chunkText } from "./chunker.js";
 
 const { Pinecone } = pkg;
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const pinecone = new Pinecone();
-const index = pinecone.Index(process.env.PINECONE_INDEX);
+const index = pinecone.index(process.env.PINECONE_INDEX);
 
 async function main() {
-  // FETCH products
+  // 1. Fetch Products & Pages
   console.log("Fetching Shopify products…");
-  const productsRaw = await fetchProducts();
-  console.log("→ products:", productsRaw.length);
+  const products = await fetchProducts();
+  console.log("→ products:", products.length);
 
-  // DELETE old product vectors from namespace "products"
-  await index._deleteMany({ deleteAll: true, namespace: "products" });
-
-  // FETCH pages (e.g. shipping policy)
   console.log("Fetching Shopify pages…");
-  const pagesRaw = await fetchPages();
-  console.log("→ pages:", pagesRaw.length);
+  const pages = await fetchPages();
+  console.log("→ pages:", pages.length);
 
-  // FETCH public website content
   console.log("Fetching public pages…");
-  const siteUrls = [
+  const publics = await Promise.all([
     "https://venturajoyeria.com/",
     "https://venturajoyeria.com/pages/sobre-nosotros",
     "https://venturajoyeria.com/policies/shipping-policy",
     "https://venturajoyeria.com/policies/refund-policy",
-  ];
+  ].map(async url => {
+    const { text } = await fetchPageText(url);
+    return { id: `public:${url}`, text };
+  }));
+  console.log("→ public pages:", publics.length);
 
-  const siteRaw = await Promise.all(
-    siteUrls.map(async url => {
-      const { text } = await fetchPageText(url);
-      console.log(`→ ${url} : ${text.length} chars`);
-      return { id: `site:${url}`, text };
-    })
-  );
-  console.log("→ public pages:", siteRaw.length);
-
-  // COMBINE all docs
-  const allDocs = [
-    ...productsRaw.map(p => ({ ...p, namespace: "products" })),
-    ...pagesRaw.map(p => ({ ...p, namespace: "site-info" })),
-    ...siteRaw.map(p => ({ ...p, namespace: "site-info" })),
-  ];
+  // 2. Namespace Strategy
+  const productDocs = products.map(p => ({ ...p, namespace: "products" }));
+  const siteDocs = [...pages, ...publics].map(p => ({ ...p, namespace: "site-info" }));
+  const allDocs = [...productDocs, ...siteDocs];
   console.log("Total raw documents:", allDocs.length);
 
-  // CHUNK
+  // 🧹 3. Delete old product vectors (only!)
+  console.log("🧹 Deleting old product vectors...");
+  await index.namespace("products").deleteAll();
+  console.log("✅ Old product vectors deleted.");
+
+  // 4. Chunk
   const chunks = allDocs.flatMap(doc =>
     chunkText(doc.text).map((piece, i) => ({
       id: `${doc.id}#${i}`,
       text: piece,
-      metadata: { source: doc.id, chunkText: piece },
-      namespace: doc.namespace,
+      metadata: { source: doc.id },
+      namespace: doc.namespace
     }))
   );
   console.log("Total chunks:", chunks.length);
 
-  // EMBEDDINGS
+  // 5. Embed
   const vectors = [];
   for (let i = 0; i < chunks.length; i += 100) {
     const batch = chunks.slice(i, i + 100);
     console.log(`Embedding batch ${i / 100 + 1}/${Math.ceil(chunks.length / 100)}`);
     const resp = await openai.embeddings.create({
       model: "text-embedding-3-small",
-      input: batch.map(c => c.text),
+      input: batch.map(c => c.text)
     });
     resp.data.forEach((e, idx) => {
       vectors.push({
         id: batch[idx].id,
         values: e.embedding,
         metadata: batch[idx].metadata,
-        namespace: batch[idx].namespace,
+        namespace: batch[idx].namespace
       });
     });
   }
   console.log("Total vectors to upsert:", vectors.length);
 
-  // UPSERT
+  // 6. Upsert to Pinecone
   console.log("Upserting to Pinecone…");
-  await index.upsert({ vectors });
-  console.log("✅ All vectors upserted!");
+  await index.upsert(vectors);
+  console.log("✅ Upsert complete!");
 }
 
 main().catch(err => {
