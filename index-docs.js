@@ -3,11 +3,16 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import OpenAI from "openai";
-import pkg    from "@pinecone-database/pinecone";
+import pkg from "@pinecone-database/pinecone";
 
-import { fetchProducts, fetchPages, fetchShippingPolicy, fetchDiscountCodes } from "./fetch-shopify.js";
-import { fetchPageText }     from "./fetch-public-pages.js";
-import { chunkText }         from "./chunker.js";
+import {
+  fetchProducts,
+  fetchPages,
+  fetchShippingPolicy,
+  fetchDiscountCodes
+} from "./fetch-shopify.js";
+import { fetchPageText } from "./fetch-public-pages.js";
+import { chunkText }     from "./chunker.js";
 
 const { Pinecone } = pkg;
 const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -25,46 +30,44 @@ async function main() {
 
   console.log("Fetching shipping policy…");
   const shipping = await fetchShippingPolicy();
-  console.log(`→ shipping: ${shipping.length}`);
+  console.log(`→ shipping policies: ${shipping.length}`);
 
   console.log("Fetching discount codes…");
   const discounts = await fetchDiscountCodes();
-  console.log(`→ discounts: ${discounts.length}`);
+  console.log(`→ discount codes: ${discounts.length}`);
 
-  console.log("Fetching public site pages…");
+  console.log("Fetching public pages…");
   const publicUrls = [
     "https://venturajoyeria.com/",
     "https://venturajoyeria.com/pages/sobre-nosotros",
     "https://venturajoyeria.com/policies/shipping-policy",
     "https://venturajoyeria.com/policies/refund-policy"
   ];
-  const publics = await Promise.all(publicUrls.map(async url => {
-    const { text } = await fetchPageText(url);
-    return { id: `public:${url}`, text };
-  }));
+  const publics = await Promise.all(publicUrls.map(fetchPageText));
   console.log(`→ public pages: ${publics.length}`);
 
-  // Combine all
+  // Combine
   const allDocs = [
     ...products,
     ...pages,
     ...shipping,
     ...discounts,
-    ...publics
+    ...publics.map(d => ({ id: `public:${d.url}`, text: d.text }))
   ];
   console.log(`Total raw docs: ${allDocs.length}`);
 
   // Chunk
-  const chunks = allDocs.flatMap(doc =>
-    chunkText(doc.text).map((txt,i) => ({
+  const chunks = allDocs.flatMap(doc => {
+    const meta = doc.metadata || {};
+    return chunkText(doc.text).map((text, i) => ({
       id:       `${doc.id}#${i}`,
-      text:     txt,
-      metadata: { source: doc.id }
-    }))
-  );
+      text,
+      metadata: { source: doc.id, chunkText: text, ...meta }
+    }));
+  });
   console.log(`Total chunks: ${chunks.length}`);
 
-  // Embed in batches
+  // Embed
   const vectors = [];
   for (let i = 0; i < chunks.length; i += 100) {
     const batch = chunks.slice(i, i + 100);
@@ -85,8 +88,9 @@ async function main() {
 
   // Upsert
   for (let i = 0; i < vectors.length; i += 100) {
-    console.log(`Upserting vectors ${i}-${i+99}`);
-    await index.upsert(vectors.slice(i, i + 100));
+    const slice = vectors.slice(i, i + 100);
+    console.log(`Upserting vectors ${i}-${i + slice.length - 1}…`);
+    await index.upsert(slice);
   }
   console.log("✅ All vectors upserted!");
 }
