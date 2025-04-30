@@ -56,7 +56,7 @@ async function main() {
   }));
 
   // 🧹 Clear old product data first
-  await index.delete1({ namespace: "products", deleteAll: true });
+  await index._delete({ namespace: "products", deleteAll: true });
   await embedChunks(productDocs, "products");
 
   // 🟩 Sync site content
