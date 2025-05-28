@@ -6,7 +6,12 @@ import express from "express";
 import cors    from "cors";
 import OpenAI  from "openai";
 import pkg     from "@pinecone-database/pinecone";
+import { v4 as uuidv4 } from "uuid";
 import { fetchProducts } from "./fetch-shopify.js";
+
+// This is an in-memory store for development/demonstration purposes.
+// It is not suitable for production environments as it will lose data on server restart and won't scale.
+const conversationStore = new Map();
 
 const { Pinecone } = pkg;
 const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -98,13 +103,24 @@ const waCard = {
 
 app.post("/chat", async (req, res) => {
   try {
+    let conversation_id = req.body.conversation_id;
+    if (!conversation_id) {
+      conversation_id = uuidv4();
+      conversationStore.set(conversation_id, []);
+    } else if (!conversationStore.has(conversation_id)) {
+      conversationStore.set(conversation_id, []);
+    }
+
+    const history = conversationStore.get(conversation_id);
     const msgs = req.body.messages ?? [];
+    const messagesForAI = [...history, ...msgs];
     const last = msgs.at(-1)?.content ?? "";
     const norm = normalize(last);
 
     // 0) explicit human/WhatsApp request
     if (/\b(whatsapp|hablar con|vendedora|humano|asesor|representante)\b/.test(norm)) {
       return res.json({
+        conversation_id,
         type:       "collection",
         reply:      "Claro, aquí tienes un enlace directo a nuestro equipo:",
         collection: waCard
@@ -143,11 +159,10 @@ app.post("/chat", async (req, res) => {
           image: p.image,
           price: p.price
         }));
-        return res.json(
-          hits.length === 1
+        const responsePayload = hits.length === 1
             ? { type: "product",     reply: "Aquí lo encontré:",        productCard: cards[0] }
-            : { type: "productList", reply: "Encontré estas opciones:", productCards: cards }
-        );
+            : { type: "productList", reply: "Encontré estas opciones:", productCards: cards };
+        return res.json({ conversation_id, ...responsePayload });
       }
     }
 
@@ -159,6 +174,7 @@ app.post("/chat", async (req, res) => {
       if (col) {
         const [label, handle] = col;
         return res.json({
+          conversation_id,
           type:       "collection",
           reply:      `Visita nuestra colección de ${label}:`,
           collection: { title: label, url: `https://venturajoyeria.com/collections/${handle}` }
@@ -169,7 +185,7 @@ app.post("/chat", async (req, res) => {
     // 4) RAG fallback → GPT answer + WhatsApp card
     const emb = await openai.embeddings.create({
       model: "text-embedding-3-small",
-      input: [last]
+      input: [last] // Using last user message for embedding
     });
     const vec = emb.data[0].embedding;
     const rag = await index.query({ vector: vec, topK: 3, includeMetadata: true });
@@ -177,24 +193,35 @@ app.post("/chat", async (req, res) => {
       .map((m, i) => `Contexto ${i+1}: ${m.metadata.chunkText}`)
       .join("\n\n");
 
-    const enriched = [
-      { role: "system", content: "Usa esta información de la tienda:\n\n" + ctx },
-      ...msgs
-    ];
+    const systemPrompt = "Eres un amigable y útil asistente de compras para Ventura Joyeria. Usa la información de contexto de la tienda (si se proporciona) y el historial de conversación previo para entender las necesidades y preferencias del cliente. Ofrece recomendaciones personalizadas, recuerda productos mencionados anteriormente si es relevante, y ayuda al cliente a encontrar los artículos perfectos. Contexto de la tienda:\n\n" + (ctx || "No se proporcionó contexto adicional.");
+    const systemMessage = { role: "system", content: systemPrompt };
+    const messagesForOpenAI = [systemMessage, ...messagesForAI]; // Use combined history for OpenAI
+
     const chat = await openai.chat.completions.create({
       model:    "gpt-4o-mini",
-      messages: enriched
+      messages: messagesForOpenAI
     });
 
+    const aiResponseContent = chat.choices[0].message.content;
+    const userMessageForHistory = msgs.at(-1);
+
+    if (userMessageForHistory) {
+      history.push({ role: 'user', content: userMessageForHistory.content });
+    }
+    history.push({ role: 'assistant', content: aiResponseContent });
+    conversationStore.set(conversation_id, history);
+
     return res.json({
+      conversation_id,
       type:       "text+collection",
-      reply:      chat.choices[0].message.content,
+      reply:      aiResponseContent,
       collection: waCard
     });
 
   } catch (err) {
     console.error("Chat error:", err);
     return res.status(500).json({
+      conversation_id: req.body.conversation_id || null, // Attempt to include conversation_id even in error
       type:       "collection",
       reply:      "Lo siento, ocurrió un error. Contáctanos directamente:",
       collection: waCard
