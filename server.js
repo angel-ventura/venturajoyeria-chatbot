@@ -9,6 +9,10 @@ import pkg     from "@pinecone-database/pinecone";
 import { v4 as uuidv4 } from "uuid";
 import { fetchProducts } from "./fetch-shopify.js";
 
+const SHOP_DOMAIN = process.env.SHOPIFY_SHOP?.includes('.')
+  ? process.env.SHOPIFY_SHOP
+  : `${process.env.SHOPIFY_SHOP}.myshopify.com`;
+
 // This is an in-memory store for development/demonstration purposes.
 // It is not suitable for production environments as it will lose data on server restart and won't scale.
 const conversationStore = new Map();
@@ -155,7 +159,7 @@ app.post("/chat", async (req, res) => {
       if (hits.length) {
         const cards = hits.map(p => ({
           title: p.title,
-          url:   `https://${process.env.SHOPIFY_SHOP}/products/${p.handle}`,
+          url:   `https://${SHOP_DOMAIN}/products/${p.handle}`,
           image: p.image,
           price: p.price
         }));
