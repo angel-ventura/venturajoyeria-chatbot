@@ -15,7 +15,7 @@ export async function fetchProducts() {
   // 🔒 Add published_status=published to retrieve only live products
   let url = `https://${SHOP}/admin/api/2025-01/products.json` +
             `?limit=250&published_status=published` +
-            `&fields=id,title,body_html,variants,handle,images,variants`;
+            `&fields=id,title,body_html,variants,handle,images`;
 
   while (url) {
     const res = await fetch(url, {
