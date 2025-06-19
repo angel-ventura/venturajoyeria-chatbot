@@ -47,7 +47,7 @@ Before you can run this project, you'll need the following:
 1.  **Clone the Repository:**
     ```bash
     git clone <repository-url>
-    cd chat-widget
+    cd venturajoyeria-chatbot
     ```
 
 2.  **Install Dependencies:**
