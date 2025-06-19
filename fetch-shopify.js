@@ -6,6 +6,10 @@ dotenv.config();
 const SHOP  = process.env.SHOPIFY_SHOP;
 const TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
 
+// Allow using either the plain shop name ("your-store") or a full domain
+// ("your-store.myshopify.com"). Normalize to the full domain form for API calls.
+const SHOP_DOMAIN = SHOP?.includes('.') ? SHOP : `${SHOP}.myshopify.com`;
+
 /**
  * Fetch *only* published products + variants via cursor‐based pagination.
  * Returns an array of { id, text, metadata:{ title, inventory, handle, image, price } }.
@@ -13,9 +17,9 @@ const TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
 export async function fetchProducts() {
   let allItems = [];
   // 🔒 Add published_status=published to retrieve only live products
-  let url = `https://${SHOP}/admin/api/2025-01/products.json` +
+  let url = `https://${SHOP_DOMAIN}/admin/api/2025-01/products.json` +
             `?limit=250&published_status=published` +
-            `&fields=id,title,body_html,variants,handle,images,variants`;
+            `&fields=id,title,body_html,variants,handle,images`;
 
   while (url) {
     const res = await fetch(url, {
@@ -65,7 +69,7 @@ export async function fetchProducts() {
  * Fetch your “Sobre Nosotros” page by title.
  */
 export async function fetchPages() {
-  const url = `https://${SHOP}/admin/api/2025-01/pages.json?limit=50`;
+  const url = `https://${SHOP_DOMAIN}/admin/api/2025-01/pages.json?limit=50`;
   const res = await fetch(url, { headers: { "X-Shopify-Access-Token": TOKEN } });
   const { pages = [] } = await res.json();
 
@@ -82,7 +86,7 @@ export async function fetchPages() {
  * Fetch Shipping Policy via Policies API.
  */
 export async function fetchShippingPolicy() {
-  const url = `https://${SHOP}/admin/api/2025-01/policies.json`;
+  const url = `https://${SHOP_DOMAIN}/admin/api/2025-01/policies.json`;
   const res = await fetch(url, { headers: { "X-Shopify-Access-Token": TOKEN } });
   const { policies = [] } = await res.json();
 
@@ -99,7 +103,7 @@ export async function fetchShippingPolicy() {
  */
 export async function fetchDiscountCodes() {
   const prRes = await fetch(
-    `https://${SHOP}/admin/api/2025-01/price_rules.json?limit=250`,
+    `https://${SHOP_DOMAIN}/admin/api/2025-01/price_rules.json?limit=250`,
     { headers: { "X-Shopify-Access-Token": TOKEN } }
   );
   const { price_rules = [] } = await prRes.json();
@@ -108,7 +112,7 @@ export async function fetchDiscountCodes() {
   for (const rule of price_rules) {
     if (!rule.starts_at || (rule.ends_at && new Date(rule.ends_at) < new Date())) continue;
     const dcRes = await fetch(
-      `https://${SHOP}/admin/api/2025-01/price_rules/${rule.id}/discount_codes.json`,
+      `https://${SHOP_DOMAIN}/admin/api/2025-01/price_rules/${rule.id}/discount_codes.json`,
       { headers: { "X-Shopify-Access-Token": TOKEN } }
     );
     const { discount_codes = [] } = await dcRes.json();
