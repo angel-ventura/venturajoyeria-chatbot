@@ -16,8 +16,7 @@ export function getPineconeIndex() {
   }
 
   const pinecone = new Pinecone({
-    apiKey:      PINECONE_API_KEY,
-    environment: PINECONE_ENVIRONMENT
+    apiKey: PINECONE_API_KEY
   });
-  return pinecone.Index(PINECONE_INDEX, "");
+  return pinecone.index(PINECONE_INDEX, PINECONE_ENVIRONMENT);
 }
