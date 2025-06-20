@@ -5,7 +5,7 @@ dotenv.config();
 import express from "express";
 import cors    from "cors";
 import OpenAI  from "openai";
-import pkg     from "@pinecone-database/pinecone";
+import { getPineconeIndex } from "./pinecone.js";
 import { v4 as uuidv4 } from "uuid";
 import { fetchProducts } from "./fetch-shopify.js";
 
@@ -19,13 +19,14 @@ const conversationStore = new Map();
 
 const MAX_CARDS = 5; // limit number of product cards returned
 
-const { Pinecone } = pkg;
 const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const pinecone = new Pinecone({
-  apiKey:            process.env.PINECONE_API_KEY,
-  controllerHostUrl: `https://controller.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`
-});
-const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
+let index;
+try {
+  index = getPineconeIndex();
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 /* ─────────── helpers ─────────── */
 const normalize = s =>

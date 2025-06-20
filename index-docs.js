@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import OpenAI from "openai";
-import pkg from "@pinecone-database/pinecone";
+import { getPineconeIndex } from "./pinecone.js";
 
 import {
   fetchProducts,
@@ -14,13 +14,14 @@ import {
 import { fetchPageText } from "./fetch-public-pages.js";
 import { chunkText }     from "./chunker.js";
 
-const { Pinecone } = pkg;
 const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const pinecone = new Pinecone({
-  apiKey:            process.env.PINECONE_API_KEY,
-  controllerHostUrl: `https://controller.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`
-});
-const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
+let index;
+try {
+  index = getPineconeIndex();
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 async function main() {
   console.log("Fetching Shopify products…");
