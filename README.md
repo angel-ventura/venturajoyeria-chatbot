@@ -65,6 +65,7 @@ Before you can run this project, you'll need the following:
     # Pinecone
     PINECONE_API_KEY="yourPineconeApiKey"
     PINECONE_ENVIRONMENT="yourPineconeEnvironment" # e.g., "gcp-starter" or "us-west1-gcp"
+    # Used to build the Pinecone controller URL
     PINECONE_INDEX="yourPineconeIndexName" # e.g., "chat-widget"
 
     # Shopify
