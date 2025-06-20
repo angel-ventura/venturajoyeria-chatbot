@@ -6,9 +6,10 @@ This project implements a sophisticated chat widget designed for e-commerce webs
 
 *   **Intelligent Query Handling:** The widget processes user queries in Spanish and can:
     *   Directly match products from the Shopify store.
-    *   Display a list of products if multiple matches are found.
+    *   Display a list of products if multiple matches are found (limited to the top 5 results).
     *   Provide links to relevant product collections.
     *   Offer a WhatsApp contact option for direct human assistance or when explicitly requested by the user.
+*   **AI‑Driven Product Search:** Product matches are ranked using OpenAI embeddings so the most relevant items appear first.
 *   **Retrieval Augmented Generation (RAG):** For more complex queries or when direct product matches aren't found, the widget uses a RAG system. It leverages OpenAI's GPT models and a Pinecone vector database to provide AI-generated answers based on the store's data.
 *   **Comprehensive Data Sources:** The information used by the chat widget is sourced from:
     *   **Shopify Admin API:** To fetch products, collections, store pages (e.g., "About Us"), shipping policies, and active discount codes.

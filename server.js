@@ -17,6 +17,8 @@ const SHOP_DOMAIN = process.env.SHOPIFY_SHOP?.includes('.')
 // It is not suitable for production environments as it will lose data on server restart and won't scale.
 const conversationStore = new Map();
 
+const MAX_CARDS = 5; // limit number of product cards returned
+
 const { Pinecone } = pkg;
 const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const pinecone = new Pinecone({
@@ -65,6 +67,17 @@ function isClose(a,b){
   return edits + (b.length - i) <= 2;
 }
 
+// cosine similarity between two embedding vectors
+function cosineSim(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na  += a[i] * a[i];
+    nb  += b[i] * b[i];
+  }
+  return dot / Math.sqrt(na * nb);
+}
+
 const tokenize = q =>
   normalize(q)
     .split(/\s+/)
@@ -73,14 +86,26 @@ const tokenize = q =>
 
 /* ───────── preload products ───────── */
 let PRODUCTS = [];
-fetchProducts().then(list => {
+fetchProducts().then(async list => {
   PRODUCTS = list.map(p => ({
     title:  p.metadata.title,
     handle: p.metadata.handle,
     image:  p.metadata.image,
     price:  p.metadata.price,
-    norm:   normalize(p.metadata.title)
+    norm:   normalize(p.metadata.title),
+    text:   p.text
   }));
+
+  // pre-compute embeddings for product titles/descriptions
+  for (let i = 0; i < PRODUCTS.length; i += 100) {
+    const batch = PRODUCTS.slice(i, i + 100);
+    const resp  = await openai.embeddings.create({
+      model: "text-embedding-3-small",
+      input: batch.map(p => p.text)
+    });
+    resp.data.forEach((e, idx) => { batch[idx].embedding = e.embedding; });
+  }
+
   console.log(`✅ Loaded ${PRODUCTS.length} published products`);
 }).catch(console.error);
 
@@ -151,14 +176,30 @@ app.post("/chat", async (req, res) => {
 
     const askAll = /\b(todas?)\b/.test(norm);
 
-    // 2) product cards
+    // 2) product cards with AI ranking
+    let queryVec = null;
     if (search.length) {
-      const hits = PRODUCTS.filter(p =>
+      const emb = await openai.embeddings.create({
+        model: "text-embedding-3-small",
+        input: [last]
+      });
+      queryVec = emb.data[0].embedding;
+
+      let hits = PRODUCTS.filter(p =>
         search.every(t =>
           p.norm.includes(t) ||
           p.norm.split(/\s+/).some(w => isClose(t, w))
         )
       );
+
+      if (hits.length === 0) hits = PRODUCTS; // fallback to all products
+
+      hits = hits
+        .map(p => ({ p, score: cosineSim(p.embedding, queryVec) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_CARDS)
+        .map(o => o.p);
+
       if (hits.length) {
         const cards = hits.map(p => ({
           title: p.title,
@@ -190,11 +231,14 @@ app.post("/chat", async (req, res) => {
     }
 
     // 4) RAG fallback → GPT answer + WhatsApp card
-    const emb = await openai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: [last] // Using last user message for embedding
-    });
-    const vec = emb.data[0].embedding;
+    let vec = queryVec;
+    if (!vec) {
+      const emb = await openai.embeddings.create({
+        model: "text-embedding-3-small",
+        input: [last]
+      });
+      vec = emb.data[0].embedding;
+    }
     const rag = await index.query({ vector: vec, topK: 3, includeMetadata: true });
     const ctx = rag.matches
       .map((m, i) => `Contexto ${i+1}: ${m.metadata.chunkText}`)
