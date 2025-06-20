@@ -22,8 +22,8 @@ const MAX_CARDS = 5; // limit number of product cards returned
 const { Pinecone } = pkg;
 const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const pinecone = new Pinecone({
-  apiKey:      process.env.PINECONE_API_KEY,
-  environment: process.env.PINECONE_ENVIRONMENT
+  apiKey:            process.env.PINECONE_API_KEY,
+  controllerHostUrl: `https://controller.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`
 });
 const index    = pinecone.Index(process.env.PINECONE_INDEX, "");
 
