@@ -16,8 +16,8 @@ export function getPineconeIndex() {
   }
 
   const pinecone = new Pinecone({
-    apiKey:            PINECONE_API_KEY,
-    controllerHostUrl: `https://controller.${PINECONE_ENVIRONMENT}.pinecone.io`
+    apiKey:      PINECONE_API_KEY,
+    environment: PINECONE_ENVIRONMENT
   });
   return pinecone.Index(PINECONE_INDEX, "");
 }
